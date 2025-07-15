@@ -9,47 +9,52 @@ import (
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/exporter"
+	"go.opentelemetry.io/collector/exporter/xexporter"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
+	"go.opentelemetry.io/collector/pdata/pprofile"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 )
 
-const (
-	typeStr   = "exampleexporter"
-	stability = component.StabilityLevelDevelopment
-)
+var exporterType = component.MustNewType("exampleexporter")
 
 // ExampleExporterFactory is factory for ExampleExporter.
-var ExampleExporterFactory = exporter.NewFactory(
-	typeStr,
+var ExampleExporterFactory = xexporter.NewFactory(
+	exporterType,
 	createExporterDefaultConfig,
-	exporter.WithTraces(createTracesExporter, stability),
-	exporter.WithMetrics(createMetricsExporter, stability),
-	exporter.WithLogs(createLogsExporter, stability),
+	xexporter.WithTraces(createTracesExporter, component.StabilityLevelDevelopment),
+	xexporter.WithMetrics(createMetricsExporter, component.StabilityLevelDevelopment),
+	xexporter.WithLogs(createLogsExporter, component.StabilityLevelDevelopment),
+	xexporter.WithProfiles(createProfilesExporter, component.StabilityLevelDevelopment),
 )
 
 func createExporterDefaultConfig() component.Config {
 	return &struct{}{}
 }
 
-func createTracesExporter(context.Context, exporter.CreateSettings, component.Config) (exporter.Traces, error) {
+func createTracesExporter(context.Context, exporter.Settings, component.Config) (exporter.Traces, error) {
 	return &ExampleExporter{}, nil
 }
 
-func createMetricsExporter(context.Context, exporter.CreateSettings, component.Config) (exporter.Metrics, error) {
+func createMetricsExporter(context.Context, exporter.Settings, component.Config) (exporter.Metrics, error) {
 	return &ExampleExporter{}, nil
 }
 
-func createLogsExporter(context.Context, exporter.CreateSettings, component.Config) (exporter.Logs, error) {
+func createLogsExporter(context.Context, exporter.Settings, component.Config) (exporter.Logs, error) {
 	return &ExampleExporter{}, nil
 }
 
-// ExampleExporter stores consumed traces and metrics for testing purposes.
+func createProfilesExporter(context.Context, exporter.Settings, component.Config) (xexporter.Profiles, error) {
+	return &ExampleExporter{}, nil
+}
+
+// ExampleExporter stores consumed traces, metrics, logs and profiles for testing purposes.
 type ExampleExporter struct {
 	componentState
-	Traces  []ptrace.Traces
-	Metrics []pmetric.Metrics
-	Logs    []plog.Logs
+	Traces   []ptrace.Traces
+	Metrics  []pmetric.Metrics
+	Logs     []plog.Logs
+	Profiles []pprofile.Profiles
 }
 
 // ConsumeTraces receives ptrace.Traces for processing by the consumer.Traces.
@@ -67,6 +72,12 @@ func (exp *ExampleExporter) ConsumeMetrics(_ context.Context, md pmetric.Metrics
 // ConsumeLogs receives plog.Logs for processing by the Logs.
 func (exp *ExampleExporter) ConsumeLogs(_ context.Context, ld plog.Logs) error {
 	exp.Logs = append(exp.Logs, ld)
+	return nil
+}
+
+// ConsumeProfiles receives pprofile.Profiles for processing by the xconsumer.Profiles.
+func (exp *ExampleExporter) ConsumeProfiles(_ context.Context, td pprofile.Profiles) error {
+	exp.Profiles = append(exp.Profiles, td)
 	return nil
 }
 

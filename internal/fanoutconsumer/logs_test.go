@@ -9,10 +9,11 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/consumer/consumertest"
-	"go.opentelemetry.io/collector/internal/testdata"
+	"go.opentelemetry.io/collector/pdata/testdata"
 )
 
 func TestLogsNotMultiplexing(t *testing.T) {
@@ -44,20 +45,20 @@ func TestLogsMultiplexingNonMutating(t *testing.T) {
 		}
 	}
 
-	assert.True(t, ld == p1.AllLogs()[0])
-	assert.True(t, ld == p1.AllLogs()[1])
-	assert.EqualValues(t, ld, p1.AllLogs()[0])
-	assert.EqualValues(t, ld, p1.AllLogs()[1])
+	assert.Equal(t, ld, p1.AllLogs()[0])
+	assert.Equal(t, ld, p1.AllLogs()[1])
+	assert.Equal(t, ld, p1.AllLogs()[0])
+	assert.Equal(t, ld, p1.AllLogs()[1])
 
-	assert.True(t, ld == p2.AllLogs()[0])
-	assert.True(t, ld == p2.AllLogs()[1])
-	assert.EqualValues(t, ld, p2.AllLogs()[0])
-	assert.EqualValues(t, ld, p2.AllLogs()[1])
+	assert.Equal(t, ld, p2.AllLogs()[0])
+	assert.Equal(t, ld, p2.AllLogs()[1])
+	assert.Equal(t, ld, p2.AllLogs()[0])
+	assert.Equal(t, ld, p2.AllLogs()[1])
 
-	assert.True(t, ld == p3.AllLogs()[0])
-	assert.True(t, ld == p3.AllLogs()[1])
-	assert.EqualValues(t, ld, p3.AllLogs()[0])
-	assert.EqualValues(t, ld, p3.AllLogs()[1])
+	assert.Equal(t, ld, p3.AllLogs()[0])
+	assert.Equal(t, ld, p3.AllLogs()[1])
+	assert.Equal(t, ld, p3.AllLogs()[0])
+	assert.Equal(t, ld, p3.AllLogs()[1])
 
 	// The data should be marked as read only.
 	assert.True(t, ld.IsReadOnly())
@@ -80,21 +81,21 @@ func TestLogsMultiplexingMutating(t *testing.T) {
 		}
 	}
 
-	assert.True(t, ld != p1.AllLogs()[0])
-	assert.True(t, ld != p1.AllLogs()[1])
-	assert.EqualValues(t, ld, p1.AllLogs()[0])
-	assert.EqualValues(t, ld, p1.AllLogs()[1])
+	assert.NotSame(t, &ld, &p1.AllLogs()[0])
+	assert.NotSame(t, &ld, &p1.AllLogs()[1])
+	assert.Equal(t, ld, p1.AllLogs()[0])
+	assert.Equal(t, ld, p1.AllLogs()[1])
 
-	assert.True(t, ld != p2.AllLogs()[0])
-	assert.True(t, ld != p2.AllLogs()[1])
-	assert.EqualValues(t, ld, p2.AllLogs()[0])
-	assert.EqualValues(t, ld, p2.AllLogs()[1])
+	assert.NotSame(t, &ld, &p2.AllLogs()[0])
+	assert.NotSame(t, &ld, &p2.AllLogs()[1])
+	assert.Equal(t, ld, p2.AllLogs()[0])
+	assert.Equal(t, ld, p2.AllLogs()[1])
 
 	// For this consumer, will receive the initial data.
-	assert.True(t, ld == p3.AllLogs()[0])
-	assert.True(t, ld == p3.AllLogs()[1])
-	assert.EqualValues(t, ld, p3.AllLogs()[0])
-	assert.EqualValues(t, ld, p3.AllLogs()[1])
+	assert.Equal(t, ld, p3.AllLogs()[0])
+	assert.Equal(t, ld, p3.AllLogs()[1])
+	assert.Equal(t, ld, p3.AllLogs()[0])
+	assert.Equal(t, ld, p3.AllLogs()[1])
 
 	// The data should not be marked as read only.
 	assert.False(t, ld.IsReadOnly())
@@ -121,20 +122,20 @@ func TestReadOnlyLogsMultiplexingMutating(t *testing.T) {
 
 	// All consumers should receive the cloned data.
 
-	assert.True(t, ld != p1.AllLogs()[0])
-	assert.True(t, ld != p1.AllLogs()[1])
-	assert.EqualValues(t, ldOrig, p1.AllLogs()[0])
-	assert.EqualValues(t, ldOrig, p1.AllLogs()[1])
+	assert.NotEqual(t, ld, p1.AllLogs()[0])
+	assert.NotEqual(t, ld, p1.AllLogs()[1])
+	assert.Equal(t, ldOrig, p1.AllLogs()[0])
+	assert.Equal(t, ldOrig, p1.AllLogs()[1])
 
-	assert.True(t, ld != p2.AllLogs()[0])
-	assert.True(t, ld != p2.AllLogs()[1])
-	assert.EqualValues(t, ldOrig, p2.AllLogs()[0])
-	assert.EqualValues(t, ldOrig, p2.AllLogs()[1])
+	assert.NotEqual(t, ld, p2.AllLogs()[0])
+	assert.NotEqual(t, ld, p2.AllLogs()[1])
+	assert.Equal(t, ldOrig, p2.AllLogs()[0])
+	assert.Equal(t, ldOrig, p2.AllLogs()[1])
 
-	assert.True(t, ld != p3.AllLogs()[0])
-	assert.True(t, ld != p3.AllLogs()[1])
-	assert.EqualValues(t, ldOrig, p3.AllLogs()[0])
-	assert.EqualValues(t, ldOrig, p3.AllLogs()[1])
+	assert.NotEqual(t, ld, p3.AllLogs()[0])
+	assert.NotEqual(t, ld, p3.AllLogs()[1])
+	assert.Equal(t, ldOrig, p3.AllLogs()[0])
+	assert.Equal(t, ldOrig, p3.AllLogs()[1])
 }
 
 func TestLogsMultiplexingMixLastMutating(t *testing.T) {
@@ -154,22 +155,22 @@ func TestLogsMultiplexingMixLastMutating(t *testing.T) {
 		}
 	}
 
-	assert.True(t, ld != p1.AllLogs()[0])
-	assert.True(t, ld != p1.AllLogs()[1])
-	assert.EqualValues(t, ld, p1.AllLogs()[0])
-	assert.EqualValues(t, ld, p1.AllLogs()[1])
+	assert.NotSame(t, &ld, &p1.AllLogs()[0])
+	assert.NotSame(t, &ld, &p1.AllLogs()[1])
+	assert.Equal(t, ld, p1.AllLogs()[0])
+	assert.Equal(t, ld, p1.AllLogs()[1])
 
 	// For this consumer, will receive the initial data.
-	assert.True(t, ld == p2.AllLogs()[0])
-	assert.True(t, ld == p2.AllLogs()[1])
-	assert.EqualValues(t, ld, p2.AllLogs()[0])
-	assert.EqualValues(t, ld, p2.AllLogs()[1])
+	assert.Equal(t, ld, p2.AllLogs()[0])
+	assert.Equal(t, ld, p2.AllLogs()[1])
+	assert.Equal(t, ld, p2.AllLogs()[0])
+	assert.Equal(t, ld, p2.AllLogs()[1])
 
 	// For this consumer, will clone the initial data.
-	assert.True(t, ld != p3.AllLogs()[0])
-	assert.True(t, ld != p3.AllLogs()[1])
-	assert.EqualValues(t, ld, p3.AllLogs()[0])
-	assert.EqualValues(t, ld, p3.AllLogs()[1])
+	assert.NotSame(t, &ld, &p3.AllLogs()[0])
+	assert.NotSame(t, &ld, &p3.AllLogs()[1])
+	assert.Equal(t, ld, p3.AllLogs()[0])
+	assert.Equal(t, ld, p3.AllLogs()[1])
 
 	// The data should not be marked as read only.
 	assert.False(t, ld.IsReadOnly())
@@ -192,21 +193,21 @@ func TestLogsMultiplexingMixLastNonMutating(t *testing.T) {
 		}
 	}
 
-	assert.True(t, ld != p1.AllLogs()[0])
-	assert.True(t, ld != p1.AllLogs()[1])
-	assert.EqualValues(t, ld, p1.AllLogs()[0])
-	assert.EqualValues(t, ld, p1.AllLogs()[1])
+	assert.NotSame(t, &ld, &p1.AllLogs()[0])
+	assert.NotSame(t, &ld, &p1.AllLogs()[1])
+	assert.Equal(t, ld, p1.AllLogs()[0])
+	assert.Equal(t, ld, p1.AllLogs()[1])
 
-	assert.True(t, ld != p2.AllLogs()[0])
-	assert.True(t, ld != p2.AllLogs()[1])
-	assert.EqualValues(t, ld, p2.AllLogs()[0])
-	assert.EqualValues(t, ld, p2.AllLogs()[1])
+	assert.NotSame(t, &ld, &p2.AllLogs()[0])
+	assert.NotSame(t, &ld, &p2.AllLogs()[1])
+	assert.Equal(t, ld, p2.AllLogs()[0])
+	assert.Equal(t, ld, p2.AllLogs()[1])
 
 	// For this consumer, will receive the initial data.
-	assert.True(t, ld == p3.AllLogs()[0])
-	assert.True(t, ld == p3.AllLogs()[1])
-	assert.EqualValues(t, ld, p3.AllLogs()[0])
-	assert.EqualValues(t, ld, p3.AllLogs()[1])
+	assert.Equal(t, ld, p3.AllLogs()[0])
+	assert.Equal(t, ld, p3.AllLogs()[1])
+	assert.Equal(t, ld, p3.AllLogs()[0])
+	assert.Equal(t, ld, p3.AllLogs()[1])
 
 	// The data should not be marked as read only.
 	assert.False(t, ld.IsReadOnly())
@@ -221,13 +222,13 @@ func TestLogsWhenErrors(t *testing.T) {
 	ld := testdata.GenerateLogs(1)
 
 	for i := 0; i < 2; i++ {
-		assert.Error(t, lfc.ConsumeLogs(context.Background(), ld))
+		require.Error(t, lfc.ConsumeLogs(context.Background(), ld))
 	}
 
-	assert.True(t, ld == p3.AllLogs()[0])
-	assert.True(t, ld == p3.AllLogs()[1])
-	assert.EqualValues(t, ld, p3.AllLogs()[0])
-	assert.EqualValues(t, ld, p3.AllLogs()[1])
+	assert.Equal(t, ld, p3.AllLogs()[0])
+	assert.Equal(t, ld, p3.AllLogs()[1])
+	assert.Equal(t, ld, p3.AllLogs()[0])
+	assert.Equal(t, ld, p3.AllLogs()[1])
 }
 
 type mutatingLogsSink struct {

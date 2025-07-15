@@ -13,7 +13,7 @@ ALL_DOC := $(shell find . \( -name "*.md" -o -name "*.yaml" \) \
                                 -type f | sort)
 
 # ALL_MODULES includes ./* dirs (excludes . dir)
-ALL_MODULES := $(shell find . -type f -name "go.mod" -exec dirname {} \; | sort | egrep  '^./' )
+ALL_MODULES := $(shell find . -type f -name "go.mod" -exec dirname {} \; | sort | grep -E '^./' )
 
 CMD?=
 
@@ -56,9 +56,23 @@ gotest-with-cover:
 	@$(MAKE) for-all-target TARGET="test-with-cover"
 	$(GOCMD) tool covdata textfmt -i=./coverage/unit -o ./coverage.txt
 
+.PHONY: gotest-with-junit
+gotest-with-junit:
+	@$(MAKE) for-all-target TARGET="test-with-junit"
+
 .PHONY: goporto
 goporto: $(PORTO)
 	$(PORTO) -w --include-internal --skip-dirs "^cmd/mdatagen/third_party$$" ./
+
+.PHONY: for-all
+for-all:
+	@echo "running $${CMD} in root"
+	@$${CMD}
+	@set -e; for dir in $(GOMODULES); do \
+	  (cd "$${dir}" && \
+	  	echo "running $${CMD} in $${dir}" && \
+	 	$${CMD} ); \
+	done
 
 .PHONY: golint
 golint:
@@ -138,13 +152,18 @@ endif
 # Build the Collector executable.
 .PHONY: otelcorecol
 otelcorecol:
-	pushd cmd/otelcorecol && GO111MODULE=on CGO_ENABLED=0 $(GOCMD) build -trimpath -o ../../bin/otelcorecol_$(GOOS)_$(GOARCH) \
+	pushd cmd/otelcorecol && CGO_ENABLED=0 $(GOCMD) build -trimpath -o ../../bin/otelcorecol_$(GOOS)_$(GOARCH) \
 		-tags $(GO_BUILD_TAGS) ./cmd/otelcorecol && popd
 
 .PHONY: genotelcorecol
 genotelcorecol: install-tools
 	pushd cmd/builder/ && $(GOCMD) run ./ --skip-compilation --config ../otelcorecol/builder-config.yaml --output-path ../otelcorecol && popd
 	$(MAKE) -C cmd/otelcorecol fmt
+	cd internal/tools && $(GOCMD) install github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+
+.PHONY: actionlint
+actionlint:
+	./.tools/actionlint -config-file .github/actionlint.yaml -color .github/workflows/*.yml .github/workflows/*.yaml
 
 .PHONY: ocb
 ocb:
@@ -156,11 +175,11 @@ ocb:
 # The source directory for OTLP ProtoBufs.
 OPENTELEMETRY_PROTO_SRC_DIR=pdata/internal/opentelemetry-proto
 
-# The SHA matching the current version of the proto to use
-OPENTELEMETRY_PROTO_VERSION=v1.0.0
+# The branch matching the current version of the proto to use
+OPENTELEMETRY_PROTO_VERSION=v1.7.0
 
 # Find all .proto files.
-OPENTELEMETRY_PROTO_FILES := $(subst $(OPENTELEMETRY_PROTO_SRC_DIR)/,,$(wildcard $(OPENTELEMETRY_PROTO_SRC_DIR)/opentelemetry/proto/*/v1/*.proto $(OPENTELEMETRY_PROTO_SRC_DIR)/opentelemetry/proto/collector/*/v1/*.proto))
+OPENTELEMETRY_PROTO_FILES := $(subst $(OPENTELEMETRY_PROTO_SRC_DIR)/,,$(wildcard $(OPENTELEMETRY_PROTO_SRC_DIR)/opentelemetry/proto/*/v1/*.proto $(OPENTELEMETRY_PROTO_SRC_DIR)/opentelemetry/proto/collector/*/v1/*.proto $(OPENTELEMETRY_PROTO_SRC_DIR)/opentelemetry/proto/*/v1development/*.proto $(OPENTELEMETRY_PROTO_SRC_DIR)/opentelemetry/proto/collector/*/v1development/*.proto))
 
 # Target directory to write generated files to.
 PROTO_TARGET_GEN_DIR=pdata/internal/data/protogen
@@ -171,8 +190,9 @@ PROTO_PACKAGE=go.opentelemetry.io/collector/$(PROTO_TARGET_GEN_DIR)
 # Intermediate directory used during generation.
 PROTO_INTERMEDIATE_DIR=pdata/internal/.patched-otlp-proto
 
-DOCKER_PROTOBUF ?= otel/build-protobuf:0.9.0
-PROTOC := docker run --rm -u ${shell id -u} -v${PWD}:${PWD} -w${PWD}/$(PROTO_INTERMEDIATE_DIR) ${DOCKER_PROTOBUF} --proto_path=${PWD}
+DOCKERCMD ?= docker
+DOCKER_PROTOBUF ?= otel/build-protobuf:0.23.0
+PROTOC := $(DOCKERCMD) run --rm -u ${shell id -u} -v${PWD}:${PWD} -w${PWD}/$(PROTO_INTERMEDIATE_DIR) ${DOCKER_PROTOBUF} --proto_path=${PWD}
 PROTO_INCLUDES := -I/usr/include/github.com/gogo/protobuf -I./
 
 # Cleanup temporary directory
@@ -185,6 +205,7 @@ genproto: genproto-cleanup
 	curl -sSL https://api.github.com/repos/open-telemetry/opentelemetry-proto/tarball/${OPENTELEMETRY_PROTO_VERSION} | tar xz --strip 1 -C ${OPENTELEMETRY_PROTO_SRC_DIR}
 	# Call a sub-make to ensure OPENTELEMETRY_PROTO_FILES is populated
 	$(MAKE) genproto_sub
+	$(MAKE) genproto_internal
 	$(MAKE) fmt
 	$(MAKE) genproto-cleanup
 
@@ -226,104 +247,54 @@ genproto_sub:
 # Generate structs, functions and tests for pdata package. Must be used after any changes
 # to proto and after running `make genproto`
 genpdata:
-	$(GOCMD) run pdata/internal/cmd/pdatagen/main.go
+	pushd pdata/ && $(GOCMD) run ./internal/cmd/pdatagen/main.go && popd
 	$(MAKE) fmt
 
-# Generate semantic convention constants. Requires a clone of the opentelemetry-specification repo
-gensemconv: $(SEMCONVGEN) $(SEMCONVKIT)
-	@[ "${SPECPATH}" ] || ( echo ">> env var SPECPATH is not set"; exit 1 )
-	@[ "${SPECTAG}" ] || ( echo ">> env var SPECTAG is not set"; exit 1 )
-	@echo "Generating semantic convention constants from specification version ${SPECTAG} at ${SPECPATH}"
-	$(SEMCONVGEN) -o semconv/${SPECTAG} -t semconv/template.j2 -s ${SPECTAG} -i ${SPECPATH}/model/. --only=resource -p conventionType=resource -f generated_resource.go
-	$(SEMCONVGEN) -o semconv/${SPECTAG} -t semconv/template.j2 -s ${SPECTAG} -i ${SPECPATH}/model/. --only=event -p conventionType=event -f generated_event.go
-	$(SEMCONVGEN) -o semconv/${SPECTAG} -t semconv/template.j2 -s ${SPECTAG} -i ${SPECPATH}/model/. --only=span -p conventionType=trace -f generated_trace.go
-	$(SEMCONVKIT) -output "semconv/$(SPECTAG)" -tag "$(SPECTAG)"
+INTERNAL_PROTO_SRC_DIRS := exporter/exporterhelper/internal/queue pdata/xpdata/request/internal
+INTERNAL_PROTO_FILES := $(foreach dir,$(INTERNAL_PROTO_SRC_DIRS),$(wildcard $(dir)/*.proto))
+INTERNAL_PROTOC := $(DOCKERCMD) run --rm -u ${shell id -u} -v${PWD}:${PWD} -w${PWD} ${DOCKER_PROTOBUF} --proto_path=${PWD} -I/usr/include/github.com/gogo/protobuf -I${PWD}/$(PROTO_INTERMEDIATE_DIR) --gogofaster_out=plugins=grpc,paths=source_relative:.
+
+.PHONY: genproto_internal
+genproto_internal:
+	@echo "Generating Go code for internal proto files"
+	@echo "Found proto files: $(INTERNAL_PROTO_FILES)"
+	$(foreach file,$(INTERNAL_PROTO_FILES),$(call exec-command,$(INTERNAL_PROTOC) $(file)))
+
+ALL_MOD_PATHS := "" $(ALL_MODULES:.%=%)
+
+.PHONY: prepare-contrib
+prepare-contrib:
+	@echo Setting contrib at $(CONTRIB_PATH) to use this core checkout
+	@$(MAKE) -j2 -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit \
+		$(addprefix -replace ,$(join $(ALL_MOD_PATHS:%=go.opentelemetry.io/collector%=),$(ALL_MOD_PATHS:%=$(CURDIR)%)))"
+	@$(MAKE) -j2 -C $(CONTRIB_PATH) gotidy
+
+	@$(MAKE) generate-contrib
 
 # Checks that the HEAD of the contrib repo checked out in CONTRIB_PATH compiles
 # against the current version of this repo.
 .PHONY: check-contrib
 check-contrib:
-	@echo Setting contrib at $(CONTRIB_PATH) to use this core checkout
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -replace go.opentelemetry.io/collector=$(CURDIR)"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -replace go.opentelemetry.io/collector/component=$(CURDIR)/component"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -replace go.opentelemetry.io/collector/config/configauth=$(CURDIR)/config/configauth"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -replace go.opentelemetry.io/collector/config/configcompression=$(CURDIR)/config/configcompression"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -replace go.opentelemetry.io/collector/config/configgrpc=$(CURDIR)/config/configgrpc"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -replace go.opentelemetry.io/collector/config/confighttp=$(CURDIR)/config/confighttp"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -replace go.opentelemetry.io/collector/config/confignet=$(CURDIR)/config/confignet"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -replace go.opentelemetry.io/collector/config/configopaque=$(CURDIR)/config/configopaque"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -replace go.opentelemetry.io/collector/config/configretry=$(CURDIR)/config/configretry"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -replace go.opentelemetry.io/collector/config/configtelemetry=$(CURDIR)/config/configtelemetry"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -replace go.opentelemetry.io/collector/config/configtls=$(CURDIR)/config/configtls"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -replace go.opentelemetry.io/collector/config/internal=$(CURDIR)/config/internal"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -replace go.opentelemetry.io/collector/confmap=$(CURDIR)/confmap"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -replace go.opentelemetry.io/collector/connector=$(CURDIR)/connector"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -replace go.opentelemetry.io/collector/connector/forwardconnector=$(CURDIR)/connector/forwardconnector"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -replace go.opentelemetry.io/collector/consumer=$(CURDIR)/consumer"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -replace go.opentelemetry.io/collector/exporter=$(CURDIR)/exporter"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -replace go.opentelemetry.io/collector/exporter/debugexporter=$(CURDIR)/exporter/debugexporter"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -replace go.opentelemetry.io/collector/exporter/loggingexporter=$(CURDIR)/exporter/loggingexporter"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -replace go.opentelemetry.io/collector/exporter/otlpexporter=$(CURDIR)/exporter/otlpexporter"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -replace go.opentelemetry.io/collector/exporter/otlphttpexporter=$(CURDIR)/exporter/otlphttpexporter"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -replace go.opentelemetry.io/collector/extension=$(CURDIR)/extension"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -replace go.opentelemetry.io/collector/extension/auth=$(CURDIR)/extension/auth"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -replace go.opentelemetry.io/collector/extension/ballastextension=$(CURDIR)/extension/ballastextension"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -replace go.opentelemetry.io/collector/extension/zpagesextension=$(CURDIR)/extension/zpagesextension"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -replace go.opentelemetry.io/collector/featuregate=$(CURDIR)/featuregate"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -replace go.opentelemetry.io/collector/otelcol=$(CURDIR)/otelcol"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -replace go.opentelemetry.io/collector/pdata=$(CURDIR)/pdata"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -replace go.opentelemetry.io/collector/processor=$(CURDIR)/processor"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -replace go.opentelemetry.io/collector/processor/batchprocessor=$(CURDIR)/processor/batchprocessor"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -replace go.opentelemetry.io/collector/processor/memorylimiterprocessor=$(CURDIR)/processor/memorylimiterprocessor"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -replace go.opentelemetry.io/collector/receiver=$(CURDIR)/receiver"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -replace go.opentelemetry.io/collector/receiver/otlpreceiver=$(CURDIR)/receiver/otlpreceiver"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -replace go.opentelemetry.io/collector/semconv=$(CURDIR)/semconv"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -replace go.opentelemetry.io/collector/service=$(CURDIR)/service"
-	@$(MAKE) -C $(CONTRIB_PATH) -j2 gotidy
-	@$(MAKE) -C $(CONTRIB_PATH) test
+	@echo -e "\nRunning tests"
+	@$(MAKE) -C $(CONTRIB_PATH) gotest
+
 	@if [ -z "$(SKIP_RESTORE_CONTRIB)" ]; then \
 		$(MAKE) restore-contrib; \
 	fi
 
+.PHONY: generate-contrib
+generate-contrib:
+	@echo -e "\nGenerating files in contrib"
+	$(MAKE) -C $(CONTRIB_PATH) -B install-tools
+	$(MAKE) -C $(CONTRIB_PATH) generate GROUP=all
+
 # Restores contrib to its original state after running check-contrib.
 .PHONY: restore-contrib
 restore-contrib:
-	@echo Restoring contrib at $(CONTRIB_PATH) to its original state
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -dropreplace go.opentelemetry.io/collector"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -dropreplace go.opentelemetry.io/collector/component"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -dropreplace go.opentelemetry.io/collector/config/configcompression"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -dropreplace go.opentelemetry.io/collector/config/configgrpc"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -dropreplace go.opentelemetry.io/collector/config/confighttp"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -dropreplace go.opentelemetry.io/collector/config/confignet"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -dropreplace go.opentelemetry.io/collector/config/configopaque"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -dropreplace go.opentelemetry.io/collector/config/configretry"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -dropreplace go.opentelemetry.io/collector/config/configtelemetry"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -dropreplace go.opentelemetry.io/collector/config/configtls"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -dropreplace go.opentelemetry.io/collector/config/internal"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -dropreplace go.opentelemetry.io/collector/confmap"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -dropreplace go.opentelemetry.io/collector/connector"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -dropreplace go.opentelemetry.io/collector/connector/forwardconnector"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -dropreplace go.opentelemetry.io/collector/consumer"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -dropreplace go.opentelemetry.io/collector/exporter"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -dropreplace go.opentelemetry.io/collector/exporter/debugexporter"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -dropreplace go.opentelemetry.io/collector/exporter/loggingexporter"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -dropreplace go.opentelemetry.io/collector/exporter/otlpexporter"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -dropreplace go.opentelemetry.io/collector/exporter/otlphttpexporter"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -dropreplace go.opentelemetry.io/collector/extension"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -dropreplace go.opentelemetry.io/collector/extension/auth"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -dropreplace go.opentelemetry.io/collector/extension/ballastextension"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -dropreplace go.opentelemetry.io/collector/extension/zpagestextension"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -dropreplace go.opentelemetry.io/collector/featuregate"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -dropreplace go.opentelemetry.io/collector/otelcol"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -dropreplace go.opentelemetry.io/collector/pdata"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -dropreplace go.opentelemetry.io/collector/processor"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -dropreplace go.opentelemetry.io/collector/processor/batchprocessor"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -dropreplace go.opentelemetry.io/collector/processor/memorylimiterprocessor"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -dropreplace go.opentelemetry.io/collector/receiver"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -dropreplace go.opentelemetry.io/collector/receiver/otlpreceiver"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -dropreplace go.opentelemetry.io/collector/semconv"
-	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit -dropreplace go.opentelemetry.io/collector/service"
-	@$(MAKE) -C $(CONTRIB_PATH) -j2 gotidy
+	@echo -e "\nRestoring contrib at $(CONTRIB_PATH) to its original state"
+	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod edit \
+		$(addprefix -dropreplace ,$(ALL_MOD_PATHS:%=go.opentelemetry.io/collector%))"
+	@$(MAKE) -C $(CONTRIB_PATH) for-all CMD="$(GOCMD) mod tidy"
 
 # List of directories where certificates are stored for unit tests.
 CERT_DIRS := localhost|""|config/configgrpc/testdata \
@@ -343,6 +314,10 @@ certs:
 .PHONY: certs-dryrun
 certs-dryrun:
 	@internal/buildscripts/gen-certs.sh -d
+
+.PHONY: checkapi
+checkapi: $(CHECKAPI)
+	$(CHECKAPI) -folder . -config .checkapi.yaml
 
 # Verify existence of READMEs for components specified as default components in the collector.
 .PHONY: checkdoc
@@ -437,9 +412,14 @@ clean:
 
 .PHONY: checklinks
 checklinks:
-	command -v markdown-link-check >/dev/null 2>&1 || { echo >&2 "markdown-link-check not installed. Run 'npm install -g markdown-link-check'"; exit 1; }
-	find . -name \*.md -print0 | xargs -0 -n1 \
-		markdown-link-check -q -c ./.github/workflows/check_links_config.json || true
+	command -v $(DOCKERCMD) >/dev/null 2>&1 || { echo >&2 "$(DOCKERCMD) not installed. Install before continuing"; exit 1; }
+	$(DOCKERCMD) run -w /home/repo --rm \
+		--mount 'type=bind,source='$(PWD)',target=/home/repo' \
+		lycheeverse/lychee \
+		--config .github/lychee.toml \
+		--root-dir /home/repo \
+		-v \
+		--no-progress './**/*.md'
 
 # error message "failed to sync logger:  sync /dev/stderr: inappropriate ioctl for device"
 # is a known issue but does not affect function.
@@ -468,3 +448,25 @@ chlog-update: $(CHLOGGEN)
 .PHONY: builder-integration-test
 builder-integration-test: $(ENVSUBST)
 	cd ./cmd/builder && ./test/test.sh
+
+.PHONY: mdatagen-test
+mdatagen-test:
+	cd cmd/mdatagen && $(GOCMD) install .
+	cd cmd/mdatagen && $(GOCMD) generate ./...
+	cd cmd/mdatagen && $(MAKE) fmt
+	cd cmd/mdatagen && $(GOCMD) test ./...
+
+.PHONY: generate-gh-issue-templates
+generate-gh-issue-templates: $(GITHUBGEN)
+	$(GITHUBGEN) issue-templates
+
+.PHONY: generate-codeowners
+generate-codeowners: $(GITHUBGEN)
+	$(GITHUBGEN) --default-codeowner "open-telemetry/collector-approvers" codeowners
+
+.PHONY: gengithub
+gengithub: $(GITHUBGEN) generate-codeowners generate-gh-issue-templates
+
+.PHONY: gendistributions
+gendistributions: $(GITHUBGEN)
+	$(GITHUBGEN) distributions

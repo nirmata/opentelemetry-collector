@@ -23,6 +23,8 @@ func TestSpan_MoveTo(t *testing.T) {
 	ms.MoveTo(dest)
 	assert.Equal(t, NewSpan(), ms)
 	assert.Equal(t, generateTestSpan(), dest)
+	dest.MoveTo(dest)
+	assert.Equal(t, generateTestSpan(), dest)
 	sharedState := internal.StateReadOnly
 	assert.Panics(t, func() { ms.MoveTo(newSpan(&otlptrace.Span{}, &sharedState)) })
 	assert.Panics(t, func() { newSpan(&otlptrace.Span{}, &sharedState).MoveTo(dest) })
@@ -72,11 +74,20 @@ func TestSpan_ParentSpanID(t *testing.T) {
 
 func TestSpan_Name(t *testing.T) {
 	ms := NewSpan()
-	assert.Equal(t, "", ms.Name())
+	assert.Empty(t, ms.Name())
 	ms.SetName("test_name")
 	assert.Equal(t, "test_name", ms.Name())
 	sharedState := internal.StateReadOnly
 	assert.Panics(t, func() { newSpan(&otlptrace.Span{}, &sharedState).SetName("test_name") })
+}
+
+func TestSpan_Flags(t *testing.T) {
+	ms := NewSpan()
+	assert.Equal(t, uint32(0), ms.Flags())
+	ms.SetFlags(uint32(0xf))
+	assert.Equal(t, uint32(0xf), ms.Flags())
+	sharedState := internal.StateReadOnly
+	assert.Panics(t, func() { newSpan(&otlptrace.Span{}, &sharedState).SetFlags(uint32(0xf)) })
 }
 
 func TestSpan_Kind(t *testing.T) {
@@ -169,6 +180,7 @@ func fillTestSpan(tv Span) {
 	internal.FillTestTraceState(internal.NewTraceState(&tv.orig.TraceState, tv.state))
 	tv.orig.ParentSpanId = data.SpanID([8]byte{8, 7, 6, 5, 4, 3, 2, 1})
 	tv.orig.Name = "test_name"
+	tv.orig.Flags = uint32(0xf)
 	tv.orig.Kind = otlptrace.Span_SpanKind(3)
 	tv.orig.StartTimeUnixNano = 1234567890
 	tv.orig.EndTimeUnixNano = 1234567890

@@ -1,17 +1,24 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+//go:generate mdatagen metadata.yaml
+
 package service // import "go.opentelemetry.io/collector/service"
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"runtime"
 
-	"github.com/google/uuid"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/metric/noop"
-	"go.opentelemetry.io/otel/sdk/resource"
+	config "go.opentelemetry.io/contrib/otelconf/v0.3.0"
+	"go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/metric"
+	noopmetric "go.opentelemetry.io/otel/metric/noop"
+	sdkresource "go.opentelemetry.io/otel/sdk/resource"
+	semconv118 "go.opentelemetry.io/otel/semconv/v1.18.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
+	nooptrace "go.opentelemetry.io/otel/trace/noop"
 	"go.uber.org/multierr"
 	"go.uber.org/zap"
 
@@ -21,20 +28,35 @@ import (
 	"go.opentelemetry.io/collector/connector"
 	"go.opentelemetry.io/collector/exporter"
 	"go.opentelemetry.io/collector/extension"
-	"go.opentelemetry.io/collector/internal/obsreportconfig"
+	"go.opentelemetry.io/collector/featuregate"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/processor"
 	"go.opentelemetry.io/collector/receiver"
-	semconv "go.opentelemetry.io/collector/semconv/v1.18.0"
 	"go.opentelemetry.io/collector/service/extensions"
+	"go.opentelemetry.io/collector/service/internal/builders"
 	"go.opentelemetry.io/collector/service/internal/graph"
+	"go.opentelemetry.io/collector/service/internal/moduleinfo"
 	"go.opentelemetry.io/collector/service/internal/proctelemetry"
-	"go.opentelemetry.io/collector/service/internal/servicetelemetry"
+	"go.opentelemetry.io/collector/service/internal/resource"
 	"go.opentelemetry.io/collector/service/internal/status"
 	"go.opentelemetry.io/collector/service/telemetry"
 )
 
-// Settings holds configuration for building a new service.
+// disableHighCardinalityMetricsFeatureGate is the feature gate that controls whether the collector should enable
+// potentially high cardinality metrics. The gate will be removed when the collector allows for view configuration.
+var disableHighCardinalityMetricsFeatureGate = featuregate.GlobalRegistry().MustRegister(
+	"telemetry.disableHighCardinalityMetrics",
+	featuregate.StageAlpha,
+	featuregate.WithRegisterDescription("controls whether the collector should enable potentially high"+
+		"cardinality metrics. The gate will be removed when the collector allows for view configuration."))
+
+// ModuleInfo describes the Go module for a particular component.
+type ModuleInfo = moduleinfo.ModuleInfo
+
+// ModuleInfos describes the go module for all components.
+type ModuleInfos = moduleinfo.ModuleInfos
+
+// Settings holds configuration for building a new Service.
 type Settings struct {
 	// BuildInfo provides collector start information.
 	BuildInfo component.BuildInfo
@@ -42,97 +64,187 @@ type Settings struct {
 	// CollectorConf contains the Collector's current configuration
 	CollectorConf *confmap.Conf
 
-	// Receivers builder for receivers.
-	Receivers *receiver.Builder
+	// Receivers configuration to its builder.
+	ReceiversConfigs   map[component.ID]component.Config
+	ReceiversFactories map[component.Type]receiver.Factory
 
-	// Processors builder for processors.
-	Processors *processor.Builder
+	// Processors configuration to its builder.
+	ProcessorsConfigs   map[component.ID]component.Config
+	ProcessorsFactories map[component.Type]processor.Factory
 
-	// Exporters builder for exporters.
-	Exporters *exporter.Builder
+	// exporters configuration to its builder.
+	ExportersConfigs   map[component.ID]component.Config
+	ExportersFactories map[component.Type]exporter.Factory
 
-	// Connectors builder for connectors.
-	Connectors *connector.Builder
+	// Connectors configuration to its builder.
+	ConnectorsConfigs   map[component.ID]component.Config
+	ConnectorsFactories map[component.Type]connector.Factory
 
 	// Extensions builder for extensions.
-	Extensions *extension.Builder
+	Extensions builders.Extension
+
+	// Extensions configuration to its builder.
+	ExtensionsConfigs   map[component.ID]component.Config
+	ExtensionsFactories map[component.Type]extension.Factory
+
+	// ModuleInfo describes the go module for each component.
+	ModuleInfos ModuleInfos
 
 	// AsyncErrorChannel is the channel that is used to report fatal errors.
 	AsyncErrorChannel chan error
 
 	// LoggingOptions provides a way to change behavior of zap logging.
 	LoggingOptions []zap.Option
-
-	// For testing purpose only.
-	useOtel *bool
 }
 
 // Service represents the implementation of a component.Host.
 type Service struct {
-	buildInfo            component.BuildInfo
-	telemetry            *telemetry.Telemetry
-	telemetrySettings    servicetelemetry.TelemetrySettings
-	host                 *serviceHost
-	telemetryInitializer *telemetryInitializer
-	collectorConf        *confmap.Conf
+	buildInfo         component.BuildInfo
+	telemetrySettings component.TelemetrySettings
+	host              *graph.Host
+	collectorConf     *confmap.Conf
+	loggerProvider    log.LoggerProvider
 }
 
+// New creates a new Service, its telemetry, and Components.
 func New(ctx context.Context, set Settings, cfg Config) (*Service, error) {
-	useOtel := obsreportconfig.UseOtelForInternalMetricsfeatureGate.IsEnabled()
-	if set.useOtel != nil {
-		useOtel = *set.useOtel
-	}
-	disableHighCard := obsreportconfig.DisableHighCardinalityMetricsfeatureGate.IsEnabled()
-	extendedConfig := obsreportconfig.UseOtelWithSDKConfigurationForInternalTelemetryFeatureGate.IsEnabled()
 	srv := &Service{
 		buildInfo: set.BuildInfo,
-		host: &serviceHost{
-			receivers:         set.Receivers,
-			processors:        set.Processors,
-			exporters:         set.Exporters,
-			connectors:        set.Connectors,
-			extensions:        set.Extensions,
-			buildInfo:         set.BuildInfo,
-			asyncErrorChannel: set.AsyncErrorChannel,
+		host: &graph.Host{
+			Receivers:  builders.NewReceiver(set.ReceiversConfigs, set.ReceiversFactories),
+			Processors: builders.NewProcessor(set.ProcessorsConfigs, set.ProcessorsFactories),
+			Exporters:  builders.NewExporter(set.ExportersConfigs, set.ExportersFactories),
+			Connectors: builders.NewConnector(set.ConnectorsConfigs, set.ConnectorsFactories),
+			Extensions: builders.NewExtension(set.ExtensionsConfigs, set.ExtensionsFactories),
+
+			ModuleInfos:       set.ModuleInfos,
+			BuildInfo:         set.BuildInfo,
+			AsyncErrorChannel: set.AsyncErrorChannel,
 		},
-		telemetryInitializer: newColTelemetry(useOtel, disableHighCard, extendedConfig),
-		collectorConf:        set.CollectorConf,
+		collectorConf: set.CollectorConf,
 	}
-	var err error
-	srv.telemetry, err = telemetry.New(ctx, telemetry.Settings{ZapOptions: set.LoggingOptions}, cfg.Telemetry)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get logger: %w", err)
-	}
-	res := buildResource(set.BuildInfo, cfg.Telemetry)
+
+	// Fetch data for internal telemetry like instance id and sdk version to provide for internal telemetry.
+	res := resource.New(set.BuildInfo, cfg.Telemetry.Resource)
 	pcommonRes := pdataFromSdk(res)
 
-	srv.telemetrySettings = servicetelemetry.TelemetrySettings{
-		Logger:         srv.telemetry.Logger(),
-		TracerProvider: srv.telemetry.TracerProvider(),
-		MeterProvider:  noop.NewMeterProvider(),
-		MetricsLevel:   cfg.Telemetry.Metrics.Level,
+	sch := semconv.SchemaURL
+
+	mpConfig := &cfg.Telemetry.Metrics.MeterProvider
+
+	if mpConfig.Views != nil {
+		if disableHighCardinalityMetricsFeatureGate.IsEnabled() {
+			return nil, errors.New("telemetry.disableHighCardinalityMetrics gate is incompatible with service::telemetry::metrics::views")
+		}
+	} else {
+		mpConfig.Views = configureViews(cfg.Telemetry.Metrics.Level)
+	}
+
+	if cfg.Telemetry.Metrics.Level == configtelemetry.LevelNone {
+		mpConfig.Readers = []config.MetricReader{}
+	}
+
+	sdk, err := config.NewSDK(
+		config.WithContext(ctx),
+		config.WithOpenTelemetryConfiguration(
+			config.OpenTelemetryConfiguration{
+				LoggerProvider: &config.LoggerProvider{
+					Processors: cfg.Telemetry.Logs.Processors,
+				},
+				MeterProvider:  mpConfig,
+				TracerProvider: &cfg.Telemetry.Traces.TracerProvider,
+				Resource: &config.Resource{
+					SchemaUrl:  &sch,
+					Attributes: attributes(res, cfg.Telemetry),
+				},
+			},
+		),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create SDK: %w", err)
+	}
+
+	telFactory := telemetry.NewFactory()
+	telset := telemetry.Settings{
+		AsyncErrorChannel: set.AsyncErrorChannel,
+		BuildInfo:         set.BuildInfo,
+		ZapOptions:        set.LoggingOptions,
+		SDK:               &sdk,
+		Resource:          res,
+	}
+
+	logger, lp, err := telFactory.CreateLogger(ctx, telset, &cfg.Telemetry)
+	if err != nil {
+		err = multierr.Append(err, sdk.Shutdown(ctx))
+		return nil, fmt.Errorf("failed to create logger: %w", err)
+	}
+	srv.loggerProvider = lp
+
+	// Use initialized logger to handle any subsequent errors
+	// https://github.com/open-telemetry/opentelemetry-collector/pull/13081
+	defer func() {
+		if err != nil {
+			logger.Error("error found during service initialization", zap.Error(err))
+			_ = sdk.Shutdown(ctx)
+		}
+	}()
+
+	tracerProvider, err := telFactory.CreateTracerProvider(ctx, telset, &cfg.Telemetry)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create tracer provider: %w", err)
+	}
+
+	logger.Info("Setting up own telemetry...")
+
+	mp, err := telFactory.CreateMeterProvider(ctx, telset, &cfg.Telemetry)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create meter provider: %w", err)
+	}
+	srv.telemetrySettings = component.TelemetrySettings{
+		Logger:         logger,
+		MeterProvider:  mp,
+		TracerProvider: tracerProvider,
 		// Construct telemetry attributes from build info and config's resource attributes.
 		Resource: pcommonRes,
-		Status:   status.NewReporter(srv.host.notifyComponentStatusChange),
 	}
-
-	if err = srv.telemetryInitializer.init(res, srv.telemetrySettings, cfg.Telemetry, set.AsyncErrorChannel); err != nil {
-		return nil, fmt.Errorf("failed to initialize telemetry: %w", err)
-	}
-	srv.telemetrySettings.MeterProvider = srv.telemetryInitializer.mp
-	srv.telemetrySettings.TracerProvider = srv.telemetryInitializer.tp
-
-	// process the configuration and initialize the pipeline
-	if err = srv.initExtensionsAndPipeline(ctx, set, cfg); err != nil {
-		// If pipeline initialization fails then shut down the telemetry server
-		if shutdownErr := srv.telemetryInitializer.shutdown(); shutdownErr != nil {
-			err = multierr.Append(err, fmt.Errorf("failed to shutdown collector telemetry: %w", shutdownErr))
+	srv.host.Reporter = status.NewReporter(srv.host.NotifyComponentStatusChange, func(err error) {
+		if errors.Is(err, status.ErrStatusNotReady) {
+			logger.Warn("Invalid transition", zap.Error(err))
 		}
+		// ignore other errors as they represent invalid state transitions and are considered benign.
+	})
 
+	if err = srv.initGraph(ctx, cfg); err != nil {
 		return nil, err
 	}
 
+	// process the configuration and initialize the pipeline
+	if err = srv.initExtensions(ctx, cfg.Extensions); err != nil {
+		return nil, err
+	}
+
+	if cfg.Telemetry.Metrics.Level != configtelemetry.LevelNone && len(mpConfig.Readers) != 0 {
+		if err = proctelemetry.RegisterProcessMetrics(srv.telemetrySettings); err != nil {
+			return nil, fmt.Errorf("failed to register process metrics: %w", err)
+		}
+	}
+
+	logsAboutMeterProvider(logger, cfg.Telemetry.Metrics, mp)
+
 	return srv, nil
+}
+
+func logsAboutMeterProvider(logger *zap.Logger, cfg telemetry.MetricsConfig, mp metric.MeterProvider) {
+	if cfg.Level == configtelemetry.LevelNone || len(cfg.Readers) == 0 {
+		logger.Info("Skipped telemetry setup.")
+		return
+	}
+
+	if lmp, ok := mp.(interface {
+		LogAboutServers(logger *zap.Logger, cfg telemetry.MetricsConfig)
+	}); ok {
+		lmp.LogAboutServers(logger, cfg)
+	}
 }
 
 // Start starts the extensions and pipelines. If Start fails Shutdown should be called to ensure a clean state.
@@ -147,29 +259,54 @@ func (srv *Service) Start(ctx context.Context) error {
 		zap.Int("NumCPU", runtime.NumCPU()),
 	)
 
-	// enable status reporting
-	srv.telemetrySettings.Status.Ready()
-
-	if err := srv.host.serviceExtensions.Start(ctx, srv.host); err != nil {
+	if err := srv.host.ServiceExtensions.Start(ctx, srv.host); err != nil {
 		return fmt.Errorf("failed to start extensions: %w", err)
 	}
 
 	if srv.collectorConf != nil {
-		if err := srv.host.serviceExtensions.NotifyConfig(ctx, srv.collectorConf); err != nil {
+		if err := srv.host.ServiceExtensions.NotifyConfig(ctx, srv.collectorConf); err != nil {
 			return err
 		}
 	}
 
-	if err := srv.host.pipelines.StartAll(ctx, srv.host); err != nil {
+	if err := srv.host.Pipelines.StartAll(ctx, srv.host); err != nil {
 		return fmt.Errorf("cannot start pipelines: %w", err)
 	}
 
-	if err := srv.host.serviceExtensions.NotifyPipelineReady(); err != nil {
+	if err := srv.host.ServiceExtensions.NotifyPipelineReady(); err != nil {
 		return err
 	}
 
 	srv.telemetrySettings.Logger.Info("Everything is ready. Begin running and processing data.")
 	return nil
+}
+
+func (srv *Service) shutdownTelemetry(ctx context.Context) error {
+	// The metric.MeterProvider and trace.TracerProvider interfaces do not have a Shutdown method.
+	// To shutdown the providers we try to cast to this interface, which matches the type signature used in the SDK.
+	type shutdownable interface {
+		Shutdown(context.Context) error
+	}
+
+	var err error
+	if prov, ok := srv.telemetrySettings.MeterProvider.(shutdownable); ok {
+		if shutdownErr := prov.Shutdown(ctx); shutdownErr != nil {
+			err = multierr.Append(err, fmt.Errorf("failed to shutdown meter provider: %w", shutdownErr))
+		}
+	}
+
+	if prov, ok := srv.telemetrySettings.TracerProvider.(shutdownable); ok {
+		if shutdownErr := prov.Shutdown(ctx); shutdownErr != nil {
+			err = multierr.Append(err, fmt.Errorf("failed to shutdown tracer provider: %w", shutdownErr))
+		}
+	}
+
+	if prov, ok := srv.loggerProvider.(shutdownable); ok {
+		if shutdownErr := prov.Shutdown(ctx); shutdownErr != nil {
+			err = multierr.Append(err, fmt.Errorf("failed to shutdown logger provider: %w", shutdownErr))
+		}
+	}
+	return err
 }
 
 // Shutdown the service. Shutdown will do the following steps in order:
@@ -184,62 +321,54 @@ func (srv *Service) Shutdown(ctx context.Context) error {
 	// Begin shutdown sequence.
 	srv.telemetrySettings.Logger.Info("Starting shutdown...")
 
-	if err := srv.host.serviceExtensions.NotifyPipelineNotReady(); err != nil {
+	if err := srv.host.ServiceExtensions.NotifyPipelineNotReady(); err != nil {
 		errs = multierr.Append(errs, fmt.Errorf("failed to notify that pipeline is not ready: %w", err))
 	}
 
-	if err := srv.host.pipelines.ShutdownAll(ctx); err != nil {
+	if err := srv.host.Pipelines.ShutdownAll(ctx, srv.host.Reporter); err != nil {
 		errs = multierr.Append(errs, fmt.Errorf("failed to shutdown pipelines: %w", err))
 	}
 
-	if err := srv.host.serviceExtensions.Shutdown(ctx); err != nil {
+	if err := srv.host.ServiceExtensions.Shutdown(ctx); err != nil {
 		errs = multierr.Append(errs, fmt.Errorf("failed to shutdown extensions: %w", err))
 	}
 
 	srv.telemetrySettings.Logger.Info("Shutdown complete.")
 
-	if err := srv.telemetry.Shutdown(ctx); err != nil {
-		errs = multierr.Append(errs, fmt.Errorf("failed to shutdown telemetry: %w", err))
-	}
+	errs = multierr.Append(errs, srv.shutdownTelemetry(ctx))
 
-	if err := srv.telemetryInitializer.shutdown(); err != nil {
-		errs = multierr.Append(errs, fmt.Errorf("failed to shutdown collector telemetry: %w", err))
-	}
 	return errs
 }
 
-func (srv *Service) initExtensionsAndPipeline(ctx context.Context, set Settings, cfg Config) error {
+// Creates extensions.
+func (srv *Service) initExtensions(ctx context.Context, cfg extensions.Config) error {
 	var err error
 	extensionsSettings := extensions.Settings{
 		Telemetry:  srv.telemetrySettings,
 		BuildInfo:  srv.buildInfo,
-		Extensions: srv.host.extensions,
+		Extensions: srv.host.Extensions,
 	}
-	if srv.host.serviceExtensions, err = extensions.New(ctx, extensionsSettings, cfg.Extensions); err != nil {
+	if srv.host.ServiceExtensions, err = extensions.New(ctx, extensionsSettings, cfg, extensions.WithReporter(srv.host.Reporter)); err != nil {
 		return fmt.Errorf("failed to build extensions: %w", err)
 	}
+	return nil
+}
 
-	pSet := graph.Settings{
+// Creates the pipeline graph.
+func (srv *Service) initGraph(ctx context.Context, cfg Config) error {
+	var err error
+	if srv.host.Pipelines, err = graph.Build(ctx, graph.Settings{
 		Telemetry:        srv.telemetrySettings,
 		BuildInfo:        srv.buildInfo,
-		ReceiverBuilder:  set.Receivers,
-		ProcessorBuilder: set.Processors,
-		ExporterBuilder:  set.Exporters,
-		ConnectorBuilder: set.Connectors,
+		ReceiverBuilder:  srv.host.Receivers,
+		ProcessorBuilder: srv.host.Processors,
+		ExporterBuilder:  srv.host.Exporters,
+		ConnectorBuilder: srv.host.Connectors,
 		PipelineConfigs:  cfg.Pipelines,
-	}
-
-	if srv.host.pipelines, err = graph.Build(ctx, pSet); err != nil {
+		ReportStatus:     srv.host.Reporter.ReportStatus,
+	}); err != nil {
 		return fmt.Errorf("failed to build pipelines: %w", err)
 	}
-
-	if cfg.Telemetry.Metrics.Level != configtelemetry.LevelNone && cfg.Telemetry.Metrics.Address != "" {
-		// The process telemetry initialization requires the ballast size, which is available after the extensions are initialized.
-		if err = proctelemetry.RegisterProcessMetrics(srv.telemetryInitializer.ocRegistry, srv.telemetryInitializer.mp, obsreportconfig.UseOtelForInternalMetricsfeatureGate.IsEnabled(), getBallastSize(srv.host)); err != nil {
-			return fmt.Errorf("failed to register process metrics: %w", err)
-		}
-	}
-
 	return nil
 }
 
@@ -249,46 +378,7 @@ func (srv *Service) Logger() *zap.Logger {
 	return srv.telemetrySettings.Logger
 }
 
-func getBallastSize(host component.Host) uint64 {
-	for _, ext := range host.GetExtensions() {
-		if bExt, ok := ext.(interface{ GetBallastSize() uint64 }); ok {
-			return bExt.GetBallastSize()
-		}
-	}
-	return 0
-}
-
-func buildResource(buildInfo component.BuildInfo, cfg telemetry.Config) *resource.Resource {
-	var telAttrs []attribute.KeyValue
-
-	for k, v := range cfg.Resource {
-		// nil value indicates that the attribute should not be included in the telemetry.
-		if v != nil {
-			telAttrs = append(telAttrs, attribute.String(k, *v))
-		}
-	}
-
-	if _, ok := cfg.Resource[semconv.AttributeServiceName]; !ok {
-		// AttributeServiceName is not specified in the config. Use the default service name.
-		telAttrs = append(telAttrs, attribute.String(semconv.AttributeServiceName, buildInfo.Command))
-	}
-
-	if _, ok := cfg.Resource[semconv.AttributeServiceInstanceID]; !ok {
-		// AttributeServiceInstanceID is not specified in the config. Auto-generate one.
-		instanceUUID, _ := uuid.NewRandom()
-		instanceID := instanceUUID.String()
-		telAttrs = append(telAttrs, attribute.String(semconv.AttributeServiceInstanceID, instanceID))
-	}
-
-	if _, ok := cfg.Resource[semconv.AttributeServiceVersion]; !ok {
-		// AttributeServiceVersion is not specified in the config. Use the actual
-		// build version.
-		telAttrs = append(telAttrs, attribute.String(semconv.AttributeServiceVersion, buildInfo.Version))
-	}
-	return resource.NewWithAttributes(semconv.SchemaURL, telAttrs...)
-}
-
-func pdataFromSdk(res *resource.Resource) pcommon.Resource {
+func pdataFromSdk(res *sdkresource.Resource) pcommon.Resource {
 	// pcommon.NewResource is the best way to generate a new resource currently and is safe to use outside of tests.
 	// Because the resource is signal agnostic, and we need a net new resource, not an existing one, this is the only
 	// method of creating it without exposing internal packages.
@@ -297,4 +387,181 @@ func pdataFromSdk(res *resource.Resource) pcommon.Resource {
 		pcommonRes.Attributes().PutStr(string(keyValue.Key), keyValue.Value.AsString())
 	}
 	return pcommonRes
+}
+
+func dropViewOption(selector *config.ViewSelector) config.View {
+	return config.View{
+		Selector: selector,
+		Stream: &config.ViewStream{
+			Aggregation: &config.ViewStreamAggregation{
+				Drop: config.ViewStreamAggregationDrop{},
+			},
+		},
+	}
+}
+
+func configureViews(level configtelemetry.Level) []config.View {
+	views := []config.View{}
+
+	if level < configtelemetry.LevelDetailed {
+		// Drop all otelhttp and otelgrpc metrics if the level is not detailed.
+		views = append(views,
+			dropViewOption(&config.ViewSelector{
+				MeterName: ptr("go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"),
+			}),
+			dropViewOption(&config.ViewSelector{
+				MeterName: ptr("go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"),
+			}),
+		)
+	}
+
+	// Make sure to add the AttributeKeys view after the AggregationDrop view:
+	// Only the first view outputting a given metric identity is actually used, so placing the
+	// AttributeKeys view first would never drop the metrics regadless of level.
+	if disableHighCardinalityMetricsFeatureGate.IsEnabled() {
+		views = append(views, []config.View{
+			{
+				Selector: &config.ViewSelector{
+					MeterName: ptr("go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"),
+				},
+				Stream: &config.ViewStream{
+					AttributeKeys: &config.IncludeExclude{
+						Excluded: []string{
+							string(semconv118.NetSockPeerAddrKey),
+							string(semconv118.NetSockPeerPortKey),
+							string(semconv118.NetSockPeerNameKey),
+						},
+					},
+				},
+			},
+			{
+				Selector: &config.ViewSelector{
+					MeterName: ptr("go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"),
+				},
+				Stream: &config.ViewStream{
+					AttributeKeys: &config.IncludeExclude{
+						Excluded: []string{
+							string(semconv118.NetHostNameKey),
+							string(semconv118.NetHostPortKey),
+						},
+					},
+				},
+			},
+		}...)
+	}
+
+	// otel-arrow library metrics
+	// See https://github.com/open-telemetry/otel-arrow/blob/c39257/pkg/otel/arrow_record/consumer.go#L174-L176
+	if level < configtelemetry.LevelNormal {
+		scope := ptr("otel-arrow/pkg/otel/arrow_record")
+		views = append(views,
+			dropViewOption(&config.ViewSelector{
+				MeterName:      scope,
+				InstrumentName: ptr("arrow_batch_records"),
+			}),
+			dropViewOption(&config.ViewSelector{
+				MeterName:      scope,
+				InstrumentName: ptr("arrow_schema_resets"),
+			}),
+			dropViewOption(&config.ViewSelector{
+				MeterName:      scope,
+				InstrumentName: ptr("arrow_memory_inuse"),
+			}),
+		)
+	}
+
+	// contrib's internal/otelarrow/netstats metrics
+	// See
+	// - https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/a25f05/internal/otelarrow/netstats/netstats.go#L130
+	// - https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/a25f05/internal/otelarrow/netstats/netstats.go#L165
+	if level < configtelemetry.LevelDetailed {
+		scope := ptr("github.com/open-telemetry/opentelemetry-collector-contrib/internal/otelarrow/netstats")
+
+		views = append(views,
+			// Compressed size metrics.
+			dropViewOption(&config.ViewSelector{
+				MeterName:      scope,
+				InstrumentName: ptr("otelcol_*_compressed_size"),
+			}),
+			dropViewOption(&config.ViewSelector{
+				MeterName:      scope,
+				InstrumentName: ptr("otelcol_*_compressed_size"),
+			}),
+
+			// makeRecvMetrics for exporters.
+			dropViewOption(&config.ViewSelector{
+				MeterName:      scope,
+				InstrumentName: ptr("otelcol_exporter_recv"),
+			}),
+			dropViewOption(&config.ViewSelector{
+				MeterName:      scope,
+				InstrumentName: ptr("otelcol_exporter_recv_wire"),
+			}),
+
+			// makeSentMetrics for receivers.
+			dropViewOption(&config.ViewSelector{
+				MeterName:      scope,
+				InstrumentName: ptr("otelcol_receiver_sent"),
+			}),
+			dropViewOption(&config.ViewSelector{
+				MeterName:      scope,
+				InstrumentName: ptr("otelcol_receiver_sent_wire"),
+			}),
+		)
+	}
+
+	// Batch processor metrics
+	scope := ptr("go.opentelemetry.io/collector/processor/batchprocessor")
+	if level < configtelemetry.LevelNormal {
+		views = append(views, dropViewOption(&config.ViewSelector{
+			MeterName: scope,
+		}))
+	} else if level < configtelemetry.LevelDetailed {
+		views = append(views, dropViewOption(&config.ViewSelector{
+			MeterName:      scope,
+			InstrumentName: ptr("otelcol_processor_batch_batch_send_size_bytes"),
+		}))
+	}
+
+	// Internal graph metrics
+	graphScope := ptr("go.opentelemetry.io/collector/service")
+	if level < configtelemetry.LevelDetailed {
+		views = append(views, dropViewOption(&config.ViewSelector{
+			MeterName:      graphScope,
+			InstrumentName: ptr("otelcol.*.consumed.size"),
+		}))
+		views = append(views, dropViewOption(&config.ViewSelector{
+			MeterName:      graphScope,
+			InstrumentName: ptr("otelcol.*.produced.size"),
+		}))
+	}
+
+	return views
+}
+
+func ptr[T any](v T) *T {
+	return &v
+}
+
+// Validate verifies the graph by calling the internal graph.Build.
+func Validate(ctx context.Context, set Settings, cfg Config) error {
+	tel := component.TelemetrySettings{
+		Logger:         zap.NewNop(),
+		TracerProvider: nooptrace.NewTracerProvider(),
+		MeterProvider:  noopmetric.NewMeterProvider(),
+		Resource:       pcommon.NewResource(),
+	}
+	_, err := graph.Build(ctx, graph.Settings{
+		Telemetry:        tel,
+		BuildInfo:        set.BuildInfo,
+		ReceiverBuilder:  builders.NewReceiver(set.ReceiversConfigs, set.ReceiversFactories),
+		ProcessorBuilder: builders.NewProcessor(set.ProcessorsConfigs, set.ProcessorsFactories),
+		ExporterBuilder:  builders.NewExporter(set.ExportersConfigs, set.ExportersFactories),
+		ConnectorBuilder: builders.NewConnector(set.ConnectorsConfigs, set.ConnectorsFactories),
+		PipelineConfigs:  cfg.Pipelines,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to build pipelines: %w", err)
+	}
+	return nil
 }

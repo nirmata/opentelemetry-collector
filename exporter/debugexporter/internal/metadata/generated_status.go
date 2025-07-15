@@ -3,23 +3,17 @@
 package metadata
 
 import (
-	"go.opentelemetry.io/otel/metric"
-	"go.opentelemetry.io/otel/trace"
-
 	"go.opentelemetry.io/collector/component"
 )
 
-const (
-	Type             = "debug"
-	TracesStability  = component.StabilityLevelDevelopment
-	MetricsStability = component.StabilityLevelDevelopment
-	LogsStability    = component.StabilityLevelDevelopment
+var (
+	Type      = component.MustNewType("debug")
+	ScopeName = "go.opentelemetry.io/collector/exporter/debugexporter"
 )
 
-func Meter(settings component.TelemetrySettings) metric.Meter {
-	return settings.MeterProvider.Meter("otelcol/debug")
-}
-
-func Tracer(settings component.TelemetrySettings) trace.Tracer {
-	return settings.TracerProvider.Tracer("otelcol/debug")
-}
+const (
+	TracesStability   = component.StabilityLevelDevelopment
+	MetricsStability  = component.StabilityLevelDevelopment
+	LogsStability     = component.StabilityLevelDevelopment
+	ProfilesStability = component.StabilityLevelDevelopment
+)

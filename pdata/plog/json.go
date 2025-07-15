@@ -48,7 +48,7 @@ func (ms Logs) unmarshalJsoniter(iter *jsoniter.Iterator) {
 	iter.ReadObjectCB(func(iter *jsoniter.Iterator, f string) bool {
 		switch f {
 		case "resource_logs", "resourceLogs":
-			iter.ReadArrayCB(func(iterator *jsoniter.Iterator) bool {
+			iter.ReadArrayCB(func(*jsoniter.Iterator) bool {
 				ms.ResourceLogs().AppendEmpty().unmarshalJsoniter(iter)
 				return true
 			})
@@ -108,6 +108,8 @@ func (ms LogRecord) unmarshalJsoniter(iter *jsoniter.Iterator) {
 			ms.orig.SeverityNumber = otlplogs.SeverityNumber(json.ReadEnumValue(iter, otlplogs.SeverityNumber_value))
 		case "severity_text", "severityText":
 			ms.orig.SeverityText = iter.ReadString()
+		case "event_name", "eventName":
+			ms.orig.EventName = iter.ReadString()
 		case "body":
 			json.ReadValue(iter, &ms.orig.Body)
 		case "attributes":

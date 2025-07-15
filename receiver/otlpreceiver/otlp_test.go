@@ -21,6 +21,9 @@ import (
 	"github.com/klauspost/compress/zstd"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata/metricdatatest"
 	spb "google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -33,29 +36,34 @@ import (
 	"go.opentelemetry.io/collector/config/configgrpc"
 	"go.opentelemetry.io/collector/config/confighttp"
 	"go.opentelemetry.io/collector/config/confignet"
+	"go.opentelemetry.io/collector/config/configoptional"
 	"go.opentelemetry.io/collector/config/configtls"
 	"go.opentelemetry.io/collector/consumer"
+	"go.opentelemetry.io/collector/consumer/consumererror"
 	"go.opentelemetry.io/collector/consumer/consumertest"
-	"go.opentelemetry.io/collector/internal/testdata"
 	"go.opentelemetry.io/collector/internal/testutil"
-	"go.opentelemetry.io/collector/obsreport/obsreporttest"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
+	"go.opentelemetry.io/collector/pdata/pprofile"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
+	"go.opentelemetry.io/collector/pdata/testdata"
+	"go.opentelemetry.io/collector/receiver/otlpreceiver/internal/metadata"
 	"go.opentelemetry.io/collector/receiver/receivertest"
 )
 
 const otlpReceiverName = "receiver_test"
 
-var otlpReceiverID = component.NewIDWithName("otlp", otlpReceiverName)
+var otlpReceiverID = component.MustNewIDWithName("otlp", otlpReceiverName)
 
 func TestJsonHttp(t *testing.T) {
 	tests := []struct {
-		name        string
-		encoding    string
-		contentType string
-		err         error
+		name               string
+		encoding           string
+		contentType        string
+		err                error
+		expectedStatus     *spb.Status
+		expectedStatusCode int
 	}{
 		{
 			name:        "JSONUncompressed",
@@ -83,16 +91,36 @@ func TestJsonHttp(t *testing.T) {
 			contentType: "application/json",
 		},
 		{
-			name:        "NotGRPCError",
-			encoding:    "",
-			contentType: "application/json",
-			err:         errors.New("my error"),
+			name:               "Permanent NotGRPCError",
+			encoding:           "",
+			contentType:        "application/json",
+			err:                consumererror.NewPermanent(errors.New("my error")),
+			expectedStatus:     &spb.Status{Code: int32(codes.Internal), Message: "Permanent error: my error"},
+			expectedStatusCode: http.StatusInternalServerError,
 		},
 		{
-			name:        "GRPCError",
-			encoding:    "",
-			contentType: "application/json",
-			err:         status.New(codes.Internal, "").Err(),
+			name:               "Retryable NotGRPCError",
+			encoding:           "",
+			contentType:        "application/json",
+			err:                errors.New("my error"),
+			expectedStatus:     &spb.Status{Code: int32(codes.Unavailable), Message: "my error"},
+			expectedStatusCode: http.StatusServiceUnavailable,
+		},
+		{
+			name:               "Permanent GRPCError",
+			encoding:           "",
+			contentType:        "application/json",
+			err:                status.New(codes.Internal, "").Err(),
+			expectedStatus:     &spb.Status{Code: int32(codes.Internal), Message: ""},
+			expectedStatusCode: http.StatusInternalServerError,
+		},
+		{
+			name:               "Retryable GRPCError",
+			encoding:           "",
+			contentType:        "application/json",
+			err:                status.New(codes.Unavailable, "").Err(),
+			expectedStatus:     &spb.Status{Code: int32(codes.Unavailable), Message: ""},
+			expectedStatusCode: http.StatusServiceUnavailable,
 		},
 	}
 	addr := testutil.GetAvailableLocalAddress(t)
@@ -101,10 +129,6 @@ func TestJsonHttp(t *testing.T) {
 	require.NoError(t, recv.Start(context.Background(), componenttest.NewNopHost()), "Failed to start trace receiver")
 	t.Cleanup(func() { require.NoError(t, recv.Shutdown(context.Background())) })
 
-	// TODO(nilebox): make starting server deterministic
-	// Wait for the servers to start
-	<-time.After(10 * time.Millisecond)
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			sink.Reset()
@@ -112,18 +136,19 @@ func TestJsonHttp(t *testing.T) {
 
 			for _, dr := range generateDataRequests(t) {
 				url := "http://" + addr + dr.path
-				respBytes := doHTTPRequest(t, url, tt.encoding, tt.contentType, dr.jsonBytes, tt.err != nil)
+				respBytes := doHTTPRequest(t, url, tt.encoding, tt.contentType, dr.jsonBytes, tt.expectedStatusCode)
 				if tt.err == nil {
 					tr := ptraceotlp.NewExportResponse()
-					assert.NoError(t, tr.UnmarshalJSON(respBytes), "Unable to unmarshal response to Response")
+					require.NoError(t, tr.UnmarshalJSON(respBytes), "Unable to unmarshal response to Response")
 					sink.checkData(t, dr.data, 1)
 				} else {
 					errStatus := &spb.Status{}
-					assert.NoError(t, json.Unmarshal(respBytes, errStatus))
+					require.NoError(t, json.Unmarshal(respBytes, errStatus))
 					if s, ok := status.FromError(tt.err); ok {
 						assert.True(t, proto.Equal(errStatus, s.Proto()))
 					} else {
-						assert.True(t, proto.Equal(errStatus, &spb.Status{Code: int32(codes.Unknown), Message: "my error"}))
+						fmt.Println(errStatus)
+						assert.True(t, proto.Equal(errStatus, tt.expectedStatus))
 					}
 					sink.checkData(t, dr.data, 0)
 				}
@@ -138,10 +163,6 @@ func TestHandleInvalidRequests(t *testing.T) {
 	recv := newHTTPReceiver(t, componenttest.NewNopTelemetrySettings(), addr, sink)
 	require.NoError(t, recv.Start(context.Background(), componenttest.NewNopHost()), "Failed to start trace receiver")
 	t.Cleanup(func() { require.NoError(t, recv.Shutdown(context.Background())) })
-
-	// TODO(nilebox): make starting server deterministic
-	// Wait for the servers to start
-	<-time.After(10 * time.Millisecond)
 
 	tests := []struct {
 		name        string
@@ -309,9 +330,11 @@ func TestHandleInvalidRequests(t *testing.T) {
 
 func TestProtoHttp(t *testing.T) {
 	tests := []struct {
-		name     string
-		encoding string
-		err      error
+		name               string
+		encoding           string
+		err                error
+		expectedStatus     *spb.Status
+		expectedStatusCode int
 	}{
 		{
 			name:     "ProtoUncompressed",
@@ -326,14 +349,32 @@ func TestProtoHttp(t *testing.T) {
 			encoding: "zstd",
 		},
 		{
-			name:     "NotGRPCError",
-			encoding: "",
-			err:      errors.New("my error"),
+			name:               "Permanent NotGRPCError",
+			encoding:           "",
+			err:                consumererror.NewPermanent(errors.New("my error")),
+			expectedStatus:     &spb.Status{Code: int32(codes.Internal), Message: "Permanent error: my error"},
+			expectedStatusCode: http.StatusInternalServerError,
 		},
 		{
-			name:     "GRPCError",
-			encoding: "",
-			err:      status.New(codes.Internal, "").Err(),
+			name:               "Retryable NotGRPCError",
+			encoding:           "",
+			err:                errors.New("my error"),
+			expectedStatus:     &spb.Status{Code: int32(codes.Unavailable), Message: "my error"},
+			expectedStatusCode: http.StatusServiceUnavailable,
+		},
+		{
+			name:               "Permanent GRPCError",
+			encoding:           "",
+			err:                status.New(codes.InvalidArgument, "").Err(),
+			expectedStatus:     &spb.Status{Code: int32(codes.InvalidArgument), Message: ""},
+			expectedStatusCode: http.StatusBadRequest,
+		},
+		{
+			name:               "Retryable GRPCError",
+			encoding:           "",
+			err:                status.New(codes.Unavailable, "").Err(),
+			expectedStatus:     &spb.Status{Code: int32(codes.Unavailable), Message: ""},
+			expectedStatusCode: http.StatusServiceUnavailable,
 		},
 	}
 	addr := testutil.GetAvailableLocalAddress(t)
@@ -345,10 +386,6 @@ func TestProtoHttp(t *testing.T) {
 	require.NoError(t, recv.Start(context.Background(), componenttest.NewNopHost()), "Failed to start trace receiver")
 	t.Cleanup(func() { require.NoError(t, recv.Shutdown(context.Background())) })
 
-	// TODO(nilebox): make starting server deterministic
-	// Wait for the servers to start
-	<-time.After(10 * time.Millisecond)
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			sink.Reset()
@@ -356,18 +393,18 @@ func TestProtoHttp(t *testing.T) {
 
 			for _, dr := range generateDataRequests(t) {
 				url := "http://" + addr + dr.path
-				respBytes := doHTTPRequest(t, url, tt.encoding, "application/x-protobuf", dr.protoBytes, tt.err != nil)
+				respBytes := doHTTPRequest(t, url, tt.encoding, "application/x-protobuf", dr.protoBytes, tt.expectedStatusCode)
 				if tt.err == nil {
 					tr := ptraceotlp.NewExportResponse()
-					assert.NoError(t, tr.UnmarshalProto(respBytes))
+					require.NoError(t, tr.UnmarshalProto(respBytes))
 					sink.checkData(t, dr.data, 1)
 				} else {
 					errStatus := &spb.Status{}
-					assert.NoError(t, proto.Unmarshal(respBytes, errStatus))
+					require.NoError(t, proto.Unmarshal(respBytes, errStatus))
 					if s, ok := status.FromError(tt.err); ok {
 						assert.True(t, proto.Equal(errStatus, s.Proto()))
 					} else {
-						assert.True(t, proto.Equal(errStatus, &spb.Status{Code: int32(codes.Unknown), Message: "my error"}))
+						assert.True(t, proto.Equal(errStatus, tt.expectedStatus))
 					}
 					sink.checkData(t, dr.data, 0)
 				}
@@ -432,9 +469,6 @@ func TestOTLPReceiverInvalidContentEncoding(t *testing.T) {
 
 	url := fmt.Sprintf("http://%s%s", addr, defaultTracesURLPath)
 
-	// Wait for the servers to start
-	<-time.After(10 * time.Millisecond)
-
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			body, err := test.reqBodyFunc()
@@ -498,11 +532,12 @@ func TestHTTPNewPortAlreadyUsed(t *testing.T) {
 func TestOTLPReceiverGRPCTracesIngestTest(t *testing.T) {
 	type ingestionStateTest struct {
 		okToIngest   bool
+		permanent    bool
 		expectedCode codes.Code
 	}
 
 	expectedReceivedBatches := 2
-	expectedIngestionBlockedRPCs := 1
+	expectedIngestionBlockedRPCs := 2
 	ingestionStates := []ingestionStateTest{
 		{
 			okToIngest:   true,
@@ -510,7 +545,12 @@ func TestOTLPReceiverGRPCTracesIngestTest(t *testing.T) {
 		},
 		{
 			okToIngest:   false,
-			expectedCode: codes.Unknown,
+			expectedCode: codes.Unavailable,
+		},
+		{
+			okToIngest:   false,
+			expectedCode: codes.Internal,
+			permanent:    true,
 		},
 		{
 			okToIngest:   true,
@@ -521,18 +561,17 @@ func TestOTLPReceiverGRPCTracesIngestTest(t *testing.T) {
 	addr := testutil.GetAvailableLocalAddress(t)
 	td := testdata.GenerateTraces(1)
 
-	tt, err := obsreporttest.SetupTelemetry(otlpReceiverID)
-	require.NoError(t, err)
+	tt := componenttest.NewTelemetry()
 	t.Cleanup(func() { require.NoError(t, tt.Shutdown(context.Background())) })
 
 	sink := &errOrSinkConsumer{TracesSink: new(consumertest.TracesSink)}
 
-	recv := newGRPCReceiver(t, tt.TelemetrySettings, addr, sink)
+	recv := newGRPCReceiver(t, tt.NewTelemetrySettings(), addr, sink)
 	require.NotNil(t, recv)
 	require.NoError(t, recv.Start(context.Background(), componenttest.NewNopHost()))
 	t.Cleanup(func() { require.NoError(t, recv.Shutdown(context.Background())) })
 
-	cc, err := grpc.Dial(addr, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithBlock())
+	cc, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	require.NoError(t, err)
 	defer func() {
 		assert.NoError(t, cc.Close())
@@ -542,7 +581,11 @@ func TestOTLPReceiverGRPCTracesIngestTest(t *testing.T) {
 		if ingestionState.okToIngest {
 			sink.SetConsumeError(nil)
 		} else {
-			sink.SetConsumeError(errors.New("consumer error"))
+			if ingestionState.permanent {
+				sink.SetConsumeError(consumererror.NewPermanent(errors.New("consumer error")))
+			} else {
+				sink.SetConsumeError(errors.New("consumer error"))
+			}
 		}
 
 		_, err = ptraceotlp.NewGRPCClient(cc).Export(context.Background(), ptraceotlp.NewExportRequestFromTraces(td))
@@ -551,12 +594,12 @@ func TestOTLPReceiverGRPCTracesIngestTest(t *testing.T) {
 		assert.Equal(t, ingestionState.expectedCode, errStatus.Code())
 	}
 
-	require.Equal(t, expectedReceivedBatches, len(sink.AllTraces()))
+	require.Len(t, sink.AllTraces(), expectedReceivedBatches)
 
-	require.NoError(t, tt.CheckReceiverTraces("grpc", int64(expectedReceivedBatches), int64(expectedIngestionBlockedRPCs)))
+	assertReceiverTraces(t, tt, otlpReceiverID, "grpc", int64(expectedReceivedBatches), int64(expectedIngestionBlockedRPCs))
 }
 
-// TestOTLPReceiverHTTPTracesNextConsumerResponse checks that the HTTP trace receiver
+// TestOTLPReceiverHTTPTracesIngestTest checks that the HTTP trace receiver
 // is returning the proper response (return and metrics) when the next consumer
 // in the pipeline reports error. The test changes the responses returned by the
 // next trace consumer, checks if data was passed down the pipeline and if
@@ -564,20 +607,30 @@ func TestOTLPReceiverGRPCTracesIngestTest(t *testing.T) {
 // trace receiver.
 func TestOTLPReceiverHTTPTracesIngestTest(t *testing.T) {
 	type ingestionStateTest struct {
-		okToIngest   bool
-		expectedCode codes.Code
+		okToIngest         bool
+		err                error
+		expectedCode       codes.Code
+		expectedStatusCode int
 	}
 
 	expectedReceivedBatches := 2
-	expectedIngestionBlockedRPCs := 1
+	expectedIngestionBlockedRPCs := 2
 	ingestionStates := []ingestionStateTest{
 		{
 			okToIngest:   true,
 			expectedCode: codes.OK,
 		},
 		{
-			okToIngest:   false,
-			expectedCode: codes.Unknown,
+			okToIngest:         false,
+			err:                consumererror.NewPermanent(errors.New("consumer error")),
+			expectedCode:       codes.Internal,
+			expectedStatusCode: http.StatusInternalServerError,
+		},
+		{
+			okToIngest:         false,
+			err:                errors.New("consumer error"),
+			expectedCode:       codes.Unavailable,
+			expectedStatusCode: http.StatusServiceUnavailable,
 		},
 		{
 			okToIngest:   true,
@@ -588,13 +641,12 @@ func TestOTLPReceiverHTTPTracesIngestTest(t *testing.T) {
 	addr := testutil.GetAvailableLocalAddress(t)
 	td := testdata.GenerateTraces(1)
 
-	tt, err := obsreporttest.SetupTelemetry(otlpReceiverID)
-	require.NoError(t, err)
+	tt := componenttest.NewTelemetry()
 	t.Cleanup(func() { require.NoError(t, tt.Shutdown(context.Background())) })
 
 	sink := &errOrSinkConsumer{TracesSink: new(consumertest.TracesSink)}
 
-	recv := newHTTPReceiver(t, tt.TelemetrySettings, addr, sink)
+	recv := newHTTPReceiver(t, tt.NewTelemetrySettings(), addr, sink)
 	require.NotNil(t, recv)
 	require.NoError(t, recv.Start(context.Background(), componenttest.NewNopHost()))
 	t.Cleanup(func() { require.NoError(t, recv.Shutdown(context.Background())) })
@@ -603,7 +655,7 @@ func TestOTLPReceiverHTTPTracesIngestTest(t *testing.T) {
 		if ingestionState.okToIngest {
 			sink.SetConsumeError(nil)
 		} else {
-			sink.SetConsumeError(errors.New("consumer error"))
+			sink.SetConsumeError(ingestionState.err)
 		}
 
 		pbMarshaler := ptrace.ProtoMarshaler{}
@@ -620,40 +672,40 @@ func TestOTLPReceiverHTTPTracesIngestTest(t *testing.T) {
 		if ingestionState.expectedCode == codes.OK {
 			require.Equal(t, 200, resp.StatusCode)
 			tr := ptraceotlp.NewExportResponse()
-			assert.NoError(t, tr.UnmarshalProto(respBytes))
+			require.NoError(t, tr.UnmarshalProto(respBytes))
 		} else {
 			errStatus := &spb.Status{}
-			assert.NoError(t, proto.Unmarshal(respBytes, errStatus))
-			assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
-			assert.Equal(t, ingestionState.expectedCode, codes.Code(errStatus.Code))
+			require.NoError(t, proto.Unmarshal(respBytes, errStatus))
+			assert.Equal(t, ingestionState.expectedStatusCode, resp.StatusCode)
+			assert.EqualValues(t, ingestionState.expectedCode, errStatus.Code)
 		}
 	}
 
-	require.Equal(t, expectedReceivedBatches, len(sink.AllTraces()))
+	require.Len(t, sink.AllTraces(), expectedReceivedBatches)
 
-	require.NoError(t, tt.CheckReceiverTraces("http", int64(expectedReceivedBatches), int64(expectedIngestionBlockedRPCs)))
+	assertReceiverTraces(t, tt, otlpReceiverID, "http", int64(expectedReceivedBatches), int64(expectedIngestionBlockedRPCs))
 }
 
 func TestGRPCInvalidTLSCredentials(t *testing.T) {
 	cfg := &Config{
 		Protocols: Protocols{
-			GRPC: &configgrpc.GRPCServerSettings{
-				NetAddr: confignet.NetAddr{
+			GRPC: configoptional.Some(configgrpc.ServerConfig{
+				NetAddr: confignet.AddrConfig{
 					Endpoint:  testutil.GetAvailableLocalAddress(t),
-					Transport: "tcp",
+					Transport: confignet.TransportTypeTCP,
 				},
-				TLSSetting: &configtls.TLSServerSetting{
-					TLSSetting: configtls.TLSSetting{
+				TLS: configoptional.Some(configtls.ServerConfig{
+					Config: configtls.Config{
 						CertFile: "willfail",
 					},
-				},
-			},
+				}),
+			}),
 		},
 	}
 
-	r, err := NewFactory().CreateTracesReceiver(
+	r, err := NewFactory().CreateTraces(
 		context.Background(),
-		receivertest.NewNopCreateSettings(),
+		receivertest.NewNopSettings(metadata.Type),
 		cfg,
 		consumertest.NewNop())
 	require.NoError(t, err)
@@ -669,25 +721,25 @@ func TestGRPCMaxRecvSize(t *testing.T) {
 	sink := newErrOrSinkConsumer()
 
 	cfg := createDefaultConfig().(*Config)
-	cfg.GRPC.NetAddr.Endpoint = addr
-	cfg.HTTP = nil
+	GetOrInsertDefault(t, &cfg.GRPC).NetAddr.Endpoint = addr
 	recv := newReceiver(t, componenttest.NewNopTelemetrySettings(), cfg, otlpReceiverID, sink)
 	require.NoError(t, recv.Start(context.Background(), componenttest.NewNopHost()))
 
-	cc, err := grpc.Dial(addr, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithBlock())
+	cc, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	require.NoError(t, err)
 
 	td := testdata.GenerateTraces(50000)
-	require.Error(t, exportTraces(cc, td))
+	err = exportTraces(cc, td)
+	require.Error(t, err)
 	assert.NoError(t, cc.Close())
 	require.NoError(t, recv.Shutdown(context.Background()))
 
-	cfg.GRPC.MaxRecvMsgSizeMiB = 100
+	cfg.GRPC.Get().MaxRecvMsgSizeMiB = 100
 	recv = newReceiver(t, componenttest.NewNopTelemetrySettings(), cfg, otlpReceiverID, sink)
 	require.NoError(t, recv.Start(context.Background(), componenttest.NewNopHost()))
 	t.Cleanup(func() { require.NoError(t, recv.Shutdown(context.Background())) })
 
-	cc, err = grpc.Dial(addr, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithBlock())
+	cc, err = grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	require.NoError(t, err)
 	defer func() {
 		assert.NoError(t, cc.Close())
@@ -702,26 +754,26 @@ func TestGRPCMaxRecvSize(t *testing.T) {
 func TestHTTPInvalidTLSCredentials(t *testing.T) {
 	cfg := &Config{
 		Protocols: Protocols{
-			HTTP: &HTTPConfig{
-				HTTPServerSettings: &confighttp.HTTPServerSettings{
+			HTTP: configoptional.Some(HTTPConfig{
+				ServerConfig: confighttp.ServerConfig{
 					Endpoint: testutil.GetAvailableLocalAddress(t),
-					TLSSetting: &configtls.TLSServerSetting{
-						TLSSetting: configtls.TLSSetting{
+					TLS: configoptional.Some(configtls.ServerConfig{
+						Config: configtls.Config{
 							CertFile: "willfail",
 						},
-					},
+					}),
 				},
 				TracesURLPath:  defaultTracesURLPath,
 				MetricsURLPath: defaultMetricsURLPath,
 				LogsURLPath:    defaultLogsURLPath,
-			},
+			}),
 		},
 	}
 
 	// TLS is resolved during Start for HTTP.
-	r, err := NewFactory().CreateTracesReceiver(
+	r, err := NewFactory().CreateTraces(
 		context.Background(),
-		receivertest.NewNopCreateSettings(),
+		receivertest.NewNopSettings(metadata.Type),
 		cfg,
 		consumertest.NewNop())
 	require.NoError(t, err)
@@ -735,15 +787,15 @@ func testHTTPMaxRequestBodySize(t *testing.T, path string, contentType string, p
 	url := "http://" + addr + path
 	cfg := &Config{
 		Protocols: Protocols{
-			HTTP: &HTTPConfig{
-				HTTPServerSettings: &confighttp.HTTPServerSettings{
+			HTTP: configoptional.Some(HTTPConfig{
+				ServerConfig: confighttp.ServerConfig{
 					Endpoint:           addr,
 					MaxRequestBodySize: int64(size),
 				},
 				TracesURLPath:  defaultTracesURLPath,
 				MetricsURLPath: defaultMetricsURLPath,
 				LogsURLPath:    defaultLogsURLPath,
-			},
+			}),
 		},
 	}
 
@@ -774,27 +826,26 @@ func TestHTTPMaxRequestBodySize(t *testing.T) {
 
 func newGRPCReceiver(t *testing.T, settings component.TelemetrySettings, endpoint string, c consumertest.Consumer) component.Component {
 	cfg := createDefaultConfig().(*Config)
-	cfg.GRPC.NetAddr.Endpoint = endpoint
-	cfg.HTTP = nil
+	GetOrInsertDefault(t, &cfg.GRPC).NetAddr.Endpoint = endpoint
 	return newReceiver(t, settings, cfg, otlpReceiverID, c)
 }
 
 func newHTTPReceiver(t *testing.T, settings component.TelemetrySettings, endpoint string, c consumertest.Consumer) component.Component {
 	cfg := createDefaultConfig().(*Config)
-	cfg.HTTP.Endpoint = endpoint
-	cfg.GRPC = nil
+	GetOrInsertDefault(t, &cfg.HTTP).ServerConfig.Endpoint = endpoint
 	return newReceiver(t, settings, cfg, otlpReceiverID, c)
 }
 
 func newReceiver(t *testing.T, settings component.TelemetrySettings, cfg *Config, id component.ID, c consumertest.Consumer) component.Component {
-	set := receivertest.NewNopCreateSettings()
+	set := receivertest.NewNopSettings(metadata.Type)
 	set.TelemetrySettings = settings
 	set.ID = id
 	r, err := newOtlpReceiver(cfg, &set)
 	require.NoError(t, err)
-	require.NoError(t, r.registerTraceConsumer(c))
-	require.NoError(t, r.registerMetricsConsumer(c))
-	require.NoError(t, r.registerLogsConsumer(c))
+	r.registerTraceConsumer(c)
+	r.registerMetricsConsumer(c)
+	r.registerLogsConsumer(c)
+	r.registerProfilesConsumer(c)
 	return r
 }
 
@@ -806,7 +857,7 @@ type dataRequest struct {
 }
 
 func generateDataRequests(t *testing.T) []dataRequest {
-	return []dataRequest{generateTracesRequest(t), generateMetricsRequests(t), generateLogsRequest(t)}
+	return []dataRequest{generateTracesRequest(t), generateMetricsRequests(t), generateLogsRequest(t), generateProfilesRequest(t)}
 }
 
 func generateTracesRequest(t *testing.T) dataRequest {
@@ -851,13 +902,27 @@ func generateLogsRequest(t *testing.T) dataRequest {
 	return dataRequest{data: ld, path: defaultLogsURLPath, jsonBytes: logJSON, protoBytes: logProto}
 }
 
+func generateProfilesRequest(t *testing.T) dataRequest {
+	protoMarshaler := &pprofile.ProtoMarshaler{}
+	jsonMarshaler := &pprofile.JSONMarshaler{}
+
+	md := testdata.GenerateProfiles(2)
+	profileProto, err := protoMarshaler.MarshalProfiles(md)
+	require.NoError(t, err)
+
+	profileJSON, err := jsonMarshaler.MarshalProfiles(md)
+	require.NoError(t, err)
+
+	return dataRequest{data: md, path: defaultProfilesURLPath, jsonBytes: profileJSON, protoBytes: profileProto}
+}
+
 func doHTTPRequest(
 	t *testing.T,
 	url string,
 	encoding string,
 	contentType string,
 	data []byte,
-	expectErr bool,
+	expectStatusCode int,
 ) []byte {
 	req := createHTTPRequest(t, url, encoding, contentType, data)
 	resp, err := http.DefaultClient.Do(req)
@@ -870,10 +935,10 @@ func doHTTPRequest(
 	// For cases like "application/json; charset=utf-8", the response will be only "application/json"
 	require.True(t, strings.HasPrefix(strings.ToLower(contentType), resp.Header.Get("Content-Type")))
 
-	if !expectErr {
+	if expectStatusCode == 0 {
 		require.Equal(t, http.StatusOK, resp.StatusCode)
 	} else {
-		require.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+		require.Equal(t, expectStatusCode, resp.StatusCode)
 	}
 
 	return respBytes
@@ -947,11 +1012,11 @@ func TestShutdown(t *testing.T) {
 	// Create OTLP receiver with gRPC and HTTP protocols.
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig().(*Config)
-	cfg.GRPC.NetAddr.Endpoint = endpointGrpc
-	cfg.HTTP.Endpoint = endpointHTTP
-	set := receivertest.NewNopCreateSettings()
+	GetOrInsertDefault(t, &cfg.GRPC).NetAddr.Endpoint = endpointGrpc
+	GetOrInsertDefault(t, &cfg.HTTP).ServerConfig.Endpoint = endpointHTTP
+	set := receivertest.NewNopSettings(metadata.Type)
 	set.ID = otlpReceiverID
-	r, err := NewFactory().CreateTracesReceiver(
+	r, err := NewFactory().CreateTraces(
 		context.Background(),
 		set,
 		cfg,
@@ -960,7 +1025,7 @@ func TestShutdown(t *testing.T) {
 	require.NotNil(t, r)
 	require.NoError(t, r.Start(context.Background(), componenttest.NewNopHost()))
 
-	conn, err := grpc.Dial(endpointGrpc, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithBlock())
+	conn, err := grpc.NewClient(endpointGrpc, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		require.NoError(t, conn.Close())
@@ -998,7 +1063,7 @@ func TestShutdown(t *testing.T) {
 	// Now shutdown the receiver, while continuing sending traces to it.
 	ctx, cancelFn := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancelFn()
-	assert.NoError(t, r.Shutdown(ctx))
+	require.NoError(t, r.Shutdown(ctx))
 
 	// Remember how many spans the sink received. This number should not change after this
 	// point because after Shutdown() returns the component is not allowed to produce
@@ -1052,15 +1117,17 @@ type errOrSinkConsumer struct {
 	*consumertest.TracesSink
 	*consumertest.MetricsSink
 	*consumertest.LogsSink
+	*consumertest.ProfilesSink
 	mu           sync.Mutex
 	consumeError error // to be returned by ConsumeTraces, if set
 }
 
 func newErrOrSinkConsumer() *errOrSinkConsumer {
 	return &errOrSinkConsumer{
-		TracesSink:  new(consumertest.TracesSink),
-		MetricsSink: new(consumertest.MetricsSink),
-		LogsSink:    new(consumertest.LogsSink),
+		TracesSink:   new(consumertest.TracesSink),
+		MetricsSink:  new(consumertest.MetricsSink),
+		LogsSink:     new(consumertest.LogsSink),
+		ProfilesSink: new(consumertest.ProfilesSink),
 	}
 }
 
@@ -1099,7 +1166,7 @@ func (esc *errOrSinkConsumer) ConsumeMetrics(ctx context.Context, md pmetric.Met
 	return esc.MetricsSink.ConsumeMetrics(ctx, md)
 }
 
-// ConsumeMetrics stores metrics to this sink.
+// ConsumeLogs stores metrics to this sink.
 func (esc *errOrSinkConsumer) ConsumeLogs(ctx context.Context, ld plog.Logs) error {
 	esc.mu.Lock()
 	defer esc.mu.Unlock()
@@ -1111,6 +1178,18 @@ func (esc *errOrSinkConsumer) ConsumeLogs(ctx context.Context, ld plog.Logs) err
 	return esc.LogsSink.ConsumeLogs(ctx, ld)
 }
 
+// ConsumeProfiles stores profiles to this sink.
+func (esc *errOrSinkConsumer) ConsumeProfiles(ctx context.Context, md pprofile.Profiles) error {
+	esc.mu.Lock()
+	defer esc.mu.Unlock()
+
+	if esc.consumeError != nil {
+		return esc.consumeError
+	}
+
+	return esc.ProfilesSink.ConsumeProfiles(ctx, md)
+}
+
 // Reset deletes any stored in the sinks, resets error to nil.
 func (esc *errOrSinkConsumer) Reset() {
 	esc.mu.Lock()
@@ -1120,28 +1199,79 @@ func (esc *errOrSinkConsumer) Reset() {
 	esc.TracesSink.Reset()
 	esc.MetricsSink.Reset()
 	esc.LogsSink.Reset()
+	esc.ProfilesSink.Reset()
 }
 
 // Reset deletes any stored in the sinks, resets error to nil.
-func (esc *errOrSinkConsumer) checkData(t *testing.T, data any, len int) {
+func (esc *errOrSinkConsumer) checkData(t *testing.T, data any, dataLen int) {
 	switch data.(type) {
 	case ptrace.Traces:
-		allTraces := esc.TracesSink.AllTraces()
-		require.Len(t, allTraces, len)
-		if len > 0 {
+		allTraces := esc.AllTraces()
+		require.Len(t, allTraces, dataLen)
+		if dataLen > 0 {
 			require.Equal(t, allTraces[0], data)
 		}
 	case pmetric.Metrics:
-		allMetrics := esc.MetricsSink.AllMetrics()
-		require.Len(t, allMetrics, len)
-		if len > 0 {
+		allMetrics := esc.AllMetrics()
+		require.Len(t, allMetrics, dataLen)
+		if dataLen > 0 {
 			require.Equal(t, allMetrics[0], data)
 		}
 	case plog.Logs:
-		allLogs := esc.LogsSink.AllLogs()
-		require.Len(t, allLogs, len)
-		if len > 0 {
+		allLogs := esc.AllLogs()
+		require.Len(t, allLogs, dataLen)
+		if dataLen > 0 {
 			require.Equal(t, allLogs[0], data)
 		}
+	case pprofile.Profiles:
+		allProfiles := esc.AllProfiles()
+		require.Len(t, allProfiles, dataLen)
+		if dataLen > 0 {
+			require.Equal(t, allProfiles[0], data)
+		}
 	}
+}
+
+func assertReceiverTraces(t *testing.T, tt *componenttest.Telemetry, id component.ID, transport string, accepted, refused int64) {
+	got, err := tt.GetMetric("otelcol_receiver_accepted_spans")
+	require.NoError(t, err)
+	metricdatatest.AssertEqual(t,
+		metricdata.Metrics{
+			Name:        "otelcol_receiver_accepted_spans",
+			Description: "Number of spans successfully pushed into the pipeline. [alpha]",
+			Unit:        "{spans}",
+			Data: metricdata.Sum[int64]{
+				Temporality: metricdata.CumulativeTemporality,
+				IsMonotonic: true,
+				DataPoints: []metricdata.DataPoint[int64]{
+					{
+						Attributes: attribute.NewSet(
+							attribute.String("receiver", id.String()),
+							attribute.String("transport", transport)),
+						Value: accepted,
+					},
+				},
+			},
+		}, got, metricdatatest.IgnoreTimestamp(), metricdatatest.IgnoreExemplars())
+
+	got, err = tt.GetMetric("otelcol_receiver_refused_spans")
+	require.NoError(t, err)
+	metricdatatest.AssertEqual(t,
+		metricdata.Metrics{
+			Name:        "otelcol_receiver_refused_spans",
+			Description: "Number of spans that could not be pushed into the pipeline. [alpha]",
+			Unit:        "{spans}",
+			Data: metricdata.Sum[int64]{
+				Temporality: metricdata.CumulativeTemporality,
+				IsMonotonic: true,
+				DataPoints: []metricdata.DataPoint[int64]{
+					{
+						Attributes: attribute.NewSet(
+							attribute.String("receiver", id.String()),
+							attribute.String("transport", transport)),
+						Value: refused,
+					},
+				},
+			},
+		}, got, metricdatatest.IgnoreTimestamp(), metricdatatest.IgnoreExemplars())
 }

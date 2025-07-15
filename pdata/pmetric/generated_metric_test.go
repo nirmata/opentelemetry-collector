@@ -13,6 +13,7 @@ import (
 
 	"go.opentelemetry.io/collector/pdata/internal"
 	otlpmetrics "go.opentelemetry.io/collector/pdata/internal/data/protogen/metrics/v1"
+	"go.opentelemetry.io/collector/pdata/pcommon"
 )
 
 func TestMetric_MoveTo(t *testing.T) {
@@ -20,6 +21,8 @@ func TestMetric_MoveTo(t *testing.T) {
 	dest := NewMetric()
 	ms.MoveTo(dest)
 	assert.Equal(t, NewMetric(), ms)
+	assert.Equal(t, generateTestMetric(), dest)
+	dest.MoveTo(dest)
 	assert.Equal(t, generateTestMetric(), dest)
 	sharedState := internal.StateReadOnly
 	assert.Panics(t, func() { ms.MoveTo(newMetric(&otlpmetrics.Metric{}, &sharedState)) })
@@ -40,7 +43,7 @@ func TestMetric_CopyTo(t *testing.T) {
 
 func TestMetric_Name(t *testing.T) {
 	ms := NewMetric()
-	assert.Equal(t, "", ms.Name())
+	assert.Empty(t, ms.Name())
 	ms.SetName("test_name")
 	assert.Equal(t, "test_name", ms.Name())
 	sharedState := internal.StateReadOnly
@@ -49,7 +52,7 @@ func TestMetric_Name(t *testing.T) {
 
 func TestMetric_Description(t *testing.T) {
 	ms := NewMetric()
-	assert.Equal(t, "", ms.Description())
+	assert.Empty(t, ms.Description())
 	ms.SetDescription("test_description")
 	assert.Equal(t, "test_description", ms.Description())
 	sharedState := internal.StateReadOnly
@@ -58,11 +61,18 @@ func TestMetric_Description(t *testing.T) {
 
 func TestMetric_Unit(t *testing.T) {
 	ms := NewMetric()
-	assert.Equal(t, "", ms.Unit())
+	assert.Empty(t, ms.Unit())
 	ms.SetUnit("1")
 	assert.Equal(t, "1", ms.Unit())
 	sharedState := internal.StateReadOnly
 	assert.Panics(t, func() { newMetric(&otlpmetrics.Metric{}, &sharedState).SetUnit("1") })
+}
+
+func TestMetric_Metadata(t *testing.T) {
+	ms := NewMetric()
+	assert.Equal(t, pcommon.NewMap(), ms.Metadata())
+	internal.FillTestMap(internal.Map(ms.Metadata()))
+	assert.Equal(t, pcommon.Map(internal.GenerateTestMap()), ms.Metadata())
 }
 
 func TestMetric_Type(t *testing.T) {
@@ -175,6 +185,7 @@ func fillTestMetric(tv Metric) {
 	tv.orig.Name = "test_name"
 	tv.orig.Description = "test_description"
 	tv.orig.Unit = "1"
+	internal.FillTestMap(internal.NewMap(&tv.orig.Metadata, tv.state))
 	tv.orig.Data = &otlpmetrics.Metric_Sum{Sum: &otlpmetrics.Sum{}}
 	fillTestSum(newSum(tv.orig.GetSum(), tv.state))
 }

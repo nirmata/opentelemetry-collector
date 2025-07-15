@@ -23,6 +23,8 @@ func TestExemplar_MoveTo(t *testing.T) {
 	ms.MoveTo(dest)
 	assert.Equal(t, NewExemplar(), ms)
 	assert.Equal(t, generateTestExemplar(), dest)
+	dest.MoveTo(dest)
+	assert.Equal(t, generateTestExemplar(), dest)
 	sharedState := internal.StateReadOnly
 	assert.Panics(t, func() { ms.MoveTo(newExemplar(&otlpmetrics.Exemplar{}, &sharedState)) })
 	assert.Panics(t, func() { newExemplar(&otlpmetrics.Exemplar{}, &sharedState).MoveTo(dest) })
@@ -55,9 +57,9 @@ func TestExemplar_ValueType(t *testing.T) {
 
 func TestExemplar_DoubleValue(t *testing.T) {
 	ms := NewExemplar()
-	assert.Equal(t, float64(0.0), ms.DoubleValue())
+	assert.InDelta(t, float64(0.0), ms.DoubleValue(), 0.01)
 	ms.SetDoubleValue(float64(17.13))
-	assert.Equal(t, float64(17.13), ms.DoubleValue())
+	assert.InDelta(t, float64(17.13), ms.DoubleValue(), 0.01)
 	assert.Equal(t, ExemplarValueTypeDouble, ms.ValueType())
 	sharedState := internal.StateReadOnly
 	assert.Panics(t, func() { newExemplar(&otlpmetrics.Exemplar{}, &sharedState).SetDoubleValue(float64(17.13)) })

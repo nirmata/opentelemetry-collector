@@ -24,25 +24,28 @@ func TestNewFloat64Slice(t *testing.T) {
 	assert.Equal(t, []float64{1, 5, 3}, ms.AsRaw())
 	ms.FromRaw([]float64{3})
 	assert.Equal(t, 1, ms.Len())
-	assert.Equal(t, float64(3), ms.At(0))
+	assert.InDelta(t, float64(3), ms.At(0), 0.01)
 
 	cp := NewFloat64Slice()
 	ms.CopyTo(cp)
 	ms.SetAt(0, float64(2))
-	assert.Equal(t, float64(2), ms.At(0))
-	assert.Equal(t, float64(3), cp.At(0))
+	assert.InDelta(t, float64(2), ms.At(0), 0.01)
+	assert.InDelta(t, float64(3), cp.At(0), 0.01)
 	ms.CopyTo(cp)
-	assert.Equal(t, float64(2), cp.At(0))
+	assert.InDelta(t, float64(2), cp.At(0), 0.01)
 
 	mv := NewFloat64Slice()
 	ms.MoveTo(mv)
 	assert.Equal(t, 0, ms.Len())
 	assert.Equal(t, 1, mv.Len())
-	assert.Equal(t, float64(2), mv.At(0))
+	assert.InDelta(t, float64(2), mv.At(0), 0.01)
 	ms.FromRaw([]float64{1, 2, 3})
 	ms.MoveTo(mv)
 	assert.Equal(t, 3, mv.Len())
-	assert.Equal(t, float64(1), mv.At(0))
+	assert.InDelta(t, float64(1), mv.At(0), 0.01)
+	mv.MoveTo(mv)
+	assert.Equal(t, 3, mv.Len())
+	assert.InDelta(t, float64(1), mv.At(0), 0.01)
 }
 
 func TestFloat64SliceReadOnly(t *testing.T) {
@@ -51,7 +54,7 @@ func TestFloat64SliceReadOnly(t *testing.T) {
 	ms := Float64Slice(internal.NewFloat64Slice(&raw, &state))
 
 	assert.Equal(t, 3, ms.Len())
-	assert.Equal(t, float64(1), ms.At(0))
+	assert.InDelta(t, float64(1), ms.At(0), 0.01)
 	assert.Panics(t, func() { ms.Append(1) })
 	assert.Panics(t, func() { ms.EnsureCapacity(2) })
 	assert.Equal(t, raw, ms.AsRaw())
@@ -69,9 +72,9 @@ func TestFloat64SliceReadOnly(t *testing.T) {
 func TestFloat64SliceAppend(t *testing.T) {
 	ms := NewFloat64Slice()
 	ms.FromRaw([]float64{1, 2, 3})
-	ms.Append(4, 5)
+	ms.Append(5, 5)
 	assert.Equal(t, 5, ms.Len())
-	assert.Equal(t, float64(5), ms.At(4))
+	assert.InDelta(t, float64(5), ms.At(4), 0.01)
 }
 
 func TestFloat64SliceEnsureCapacity(t *testing.T) {
@@ -80,4 +83,62 @@ func TestFloat64SliceEnsureCapacity(t *testing.T) {
 	assert.Equal(t, 4, cap(*ms.getOrig()))
 	ms.EnsureCapacity(2)
 	assert.Equal(t, 4, cap(*ms.getOrig()))
+}
+
+func TestFloat64SliceAll(t *testing.T) {
+	ms := NewFloat64Slice()
+	ms.FromRaw([]float64{1, 2, 3})
+	assert.NotEmpty(t, ms.Len())
+
+	var c int
+	for i, v := range ms.All() {
+		assert.Equal(t, ms.At(i), v, "element should match")
+		c++
+	}
+	assert.Equal(t, ms.Len(), c, "All elements should have been visited")
+}
+
+func TestFloat64SliceMoveAndAppendTo(t *testing.T) {
+	// Test moving from an empty slice
+	ms := NewFloat64Slice()
+	ms2 := NewFloat64Slice()
+	ms.MoveAndAppendTo(ms2)
+	assert.Equal(t, NewFloat64Slice(), ms2)
+	assert.Equal(t, ms.Len(), 0)
+
+	// Test moving to empty slice
+	ms.FromRaw([]float64{1, 2, 3})
+	ms.MoveAndAppendTo(ms2)
+	assert.Equal(t, ms2.Len(), 3)
+
+	// Test moving to a non empty slice
+	ms.FromRaw([]float64{1, 2, 3})
+	ms.MoveAndAppendTo(ms2)
+	assert.Equal(t, ms2.Len(), 6)
+}
+
+func TestFloat64SliceEqual(t *testing.T) {
+	ms := NewFloat64Slice()
+	ms2 := NewFloat64Slice()
+	assert.True(t, ms.Equal(ms2))
+
+	ms.Append(1, 2, 3)
+	assert.False(t, ms.Equal(ms2))
+
+	ms2.Append(1, 2, 3)
+	assert.True(t, ms.Equal(ms2))
+}
+
+func BenchmarkFloat64SliceEqual(b *testing.B) {
+	ms := NewFloat64Slice()
+	ms.Append(1, 2, 3)
+	cmp := NewFloat64Slice()
+	cmp.Append(1, 2, 3)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for n := 0; n < b.N; n++ {
+		_ = ms.Equal(cmp)
+	}
 }

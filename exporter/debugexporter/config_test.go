@@ -10,7 +10,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/configtelemetry"
 	"go.opentelemetry.io/collector/confmap"
 	"go.opentelemetry.io/collector/confmap/confmaptest"
@@ -19,7 +18,7 @@ import (
 func TestUnmarshalDefaultConfig(t *testing.T) {
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig()
-	assert.NoError(t, component.UnmarshalConfig(confmap.New(), cfg))
+	require.NoError(t, confmap.New().Unmarshal(&cfg))
 	assert.Equal(t, factory.CreateDefaultConfig(), cfg)
 }
 
@@ -39,7 +38,7 @@ func TestUnmarshalConfig(t *testing.T) {
 		},
 		{
 			filename:    "config_verbosity_typo.yaml",
-			expectedErr: "1 error(s) decoding:\n\n* '' has invalid keys: verBosity",
+			expectedErr: "'' has invalid keys: verBosity",
 		},
 	}
 
@@ -49,11 +48,11 @@ func TestUnmarshalConfig(t *testing.T) {
 			require.NoError(t, err)
 			factory := NewFactory()
 			cfg := factory.CreateDefaultConfig()
-			err = component.UnmarshalConfig(cm, cfg)
+			err = cm.Unmarshal(&cfg)
 			if tt.expectedErr != "" {
-				assert.EqualError(t, err, tt.expectedErr)
+				assert.ErrorContains(t, err, tt.expectedErr)
 			} else {
-				assert.NoError(t, err)
+				require.NoError(t, err)
 				assert.Equal(t, tt.cfg, cfg)
 			}
 		})
@@ -80,10 +79,9 @@ func Test_UnmarshalMarshalled(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-
 			conf := confmap.New()
 			err := conf.Marshal(tc.inCfg)
-			assert.NoError(t, err)
+			require.NoError(t, err)
 
 			raw := conf.ToStringMap()
 
@@ -91,14 +89,14 @@ func Test_UnmarshalMarshalled(t *testing.T) {
 
 			outCfg := &Config{}
 
-			err = component.UnmarshalConfig(conf, outCfg)
+			err = conf.Unmarshal(outCfg)
 
 			if tc.expectedErr == "" {
-				assert.NoError(t, err)
-				assert.Equal(t, outCfg, tc.expectedConfig)
+				require.NoError(t, err)
+				assert.Equal(t, tc.expectedConfig, outCfg)
 				return
 			}
-			assert.Error(t, err)
+			require.Error(t, err)
 			assert.EqualError(t, err, tc.expectedErr)
 		})
 	}

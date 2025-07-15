@@ -21,6 +21,8 @@ func TestSummaryDataPointValueAtQuantile_MoveTo(t *testing.T) {
 	ms.MoveTo(dest)
 	assert.Equal(t, NewSummaryDataPointValueAtQuantile(), ms)
 	assert.Equal(t, generateTestSummaryDataPointValueAtQuantile(), dest)
+	dest.MoveTo(dest)
+	assert.Equal(t, generateTestSummaryDataPointValueAtQuantile(), dest)
 	sharedState := internal.StateReadOnly
 	assert.Panics(t, func() {
 		ms.MoveTo(newSummaryDataPointValueAtQuantile(&otlpmetrics.SummaryDataPoint_ValueAtQuantile{}, &sharedState))
@@ -46,9 +48,9 @@ func TestSummaryDataPointValueAtQuantile_CopyTo(t *testing.T) {
 
 func TestSummaryDataPointValueAtQuantile_Quantile(t *testing.T) {
 	ms := NewSummaryDataPointValueAtQuantile()
-	assert.Equal(t, float64(0.0), ms.Quantile())
+	assert.InDelta(t, float64(0.0), ms.Quantile(), 0.01)
 	ms.SetQuantile(float64(17.13))
-	assert.Equal(t, float64(17.13), ms.Quantile())
+	assert.InDelta(t, float64(17.13), ms.Quantile(), 0.01)
 	sharedState := internal.StateReadOnly
 	assert.Panics(t, func() {
 		newSummaryDataPointValueAtQuantile(&otlpmetrics.SummaryDataPoint_ValueAtQuantile{}, &sharedState).SetQuantile(float64(17.13))
@@ -57,9 +59,9 @@ func TestSummaryDataPointValueAtQuantile_Quantile(t *testing.T) {
 
 func TestSummaryDataPointValueAtQuantile_Value(t *testing.T) {
 	ms := NewSummaryDataPointValueAtQuantile()
-	assert.Equal(t, float64(0.0), ms.Value())
+	assert.InDelta(t, float64(0.0), ms.Value(), 0.01)
 	ms.SetValue(float64(17.13))
-	assert.Equal(t, float64(17.13), ms.Value())
+	assert.InDelta(t, float64(17.13), ms.Value(), 0.01)
 	sharedState := internal.StateReadOnly
 	assert.Panics(t, func() {
 		newSummaryDataPointValueAtQuantile(&otlpmetrics.SummaryDataPoint_ValueAtQuantile{}, &sharedState).SetValue(float64(17.13))

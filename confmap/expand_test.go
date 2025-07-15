@@ -14,7 +14,7 @@ import (
 )
 
 func TestResolverExpandEnvVars(t *testing.T) {
-	var testCases = []struct {
+	testCases := []struct {
 		name string // test case name (also file name containing config yaml)
 	}{
 		{name: "expand-with-no-env.yaml"},
@@ -40,9 +40,9 @@ func TestResolverExpandEnvVars(t *testing.T) {
 		return NewRetrieved(envs[uri[4:]])
 	})
 
-	for _, test := range testCases {
-		t.Run(test.name, func(t *testing.T) {
-			resolver, err := NewResolver(ResolverSettings{URIs: []string{filepath.Join("testdata", test.name)}, Providers: makeMapProvidersMap(fileProvider, envProvider), Converters: nil})
+	for _, tt := range testCases {
+		t.Run(tt.name, func(t *testing.T) {
+			resolver, err := NewResolver(ResolverSettings{URIs: []string{filepath.Join("testdata", tt.name)}, ProviderFactories: []ProviderFactory{fileProvider, envProvider}, ConverterFactories: nil})
 			require.NoError(t, err)
 
 			// Test that expanded configs are the same with the simple config with no env vars.
@@ -61,11 +61,8 @@ func TestResolverDoneNotExpandOldEnvVars(t *testing.T) {
 	envProvider := newFakeProvider("env", func(context.Context, string, WatcherFunc) (*Retrieved, error) {
 		return NewRetrieved("some string")
 	})
-	emptySchemeProvider := newFakeProvider("", func(context.Context, string, WatcherFunc) (*Retrieved, error) {
-		return NewRetrieved("some string")
-	})
 
-	resolver, err := NewResolver(ResolverSettings{URIs: []string{"test:"}, Providers: makeMapProvidersMap(fileProvider, envProvider, emptySchemeProvider), Converters: nil})
+	resolver, err := NewResolver(ResolverSettings{URIs: []string{"test:"}, ProviderFactories: []ProviderFactory{fileProvider, envProvider}, ConverterFactories: nil})
 	require.NoError(t, err)
 
 	// Test that expanded configs are the same with the simple config with no env vars.
@@ -78,7 +75,8 @@ func TestResolverExpandMapAndSliceValues(t *testing.T) {
 	provider := newFakeProvider("input", func(context.Context, string, WatcherFunc) (*Retrieved, error) {
 		return NewRetrieved(map[string]any{
 			"test_map":   map[string]any{"recv": "${test:MAP_VALUE}"},
-			"test_slice": []any{"${test:MAP_VALUE}"}})
+			"test_slice": []any{"${test:MAP_VALUE}"},
+		})
 	})
 
 	const receiverExtraMapValue = "some map value"
@@ -86,22 +84,24 @@ func TestResolverExpandMapAndSliceValues(t *testing.T) {
 		return NewRetrieved(receiverExtraMapValue)
 	})
 
-	resolver, err := NewResolver(ResolverSettings{URIs: []string{"input:"}, Providers: makeMapProvidersMap(provider, testProvider), Converters: nil})
+	resolver, err := NewResolver(ResolverSettings{URIs: []string{"input:"}, ProviderFactories: []ProviderFactory{provider, testProvider}, ConverterFactories: nil})
 	require.NoError(t, err)
 
 	cfgMap, err := resolver.Resolve(context.Background())
 	require.NoError(t, err)
 	expectedMap := map[string]any{
 		"test_map":   map[string]any{"recv": receiverExtraMapValue},
-		"test_slice": []any{receiverExtraMapValue}}
+		"test_slice": []any{receiverExtraMapValue},
+	}
 	assert.Equal(t, expectedMap, cfgMap.ToStringMap())
 }
 
 func TestResolverExpandStringValues(t *testing.T) {
 	tests := []struct {
-		name   string
-		input  string
-		output any
+		name            string
+		input           string
+		output          any
+		defaultProvider bool
 	}{
 		// Embedded.
 		{
@@ -110,9 +110,21 @@ func TestResolverExpandStringValues(t *testing.T) {
 			output: "${HOST}:${PORT}",
 		},
 		{
+			name:            "NoMatchOldStyleDefaultProvider",
+			input:           "${HOST}:${PORT}",
+			output:          "localhost:3044",
+			defaultProvider: true,
+		},
+		{
 			name:   "NoMatchOldStyleNoBrackets",
 			input:  "${HOST}:$PORT",
 			output: "${HOST}:$PORT",
+		},
+		{
+			name:            "NoMatchOldStyleNoBracketsDefaultProvider",
+			input:           "${HOST}:$PORT",
+			output:          "localhost:$PORT",
+			defaultProvider: true,
 		},
 		{
 			name:   "ComplexValue",
@@ -138,6 +150,12 @@ func TestResolverExpandStringValues(t *testing.T) {
 			name:   "EmbeddedNewAndOldStyle",
 			input:  "${env:HOST}:${PORT}",
 			output: "localhost:${PORT}",
+		},
+		{
+			name:            "EmbeddedNewAndOldStyleDefaultProvider",
+			input:           "${env:HOST}:${PORT}",
+			output:          "localhost:3044",
+			defaultProvider: true,
 		},
 		{
 			name:   "Int",
@@ -170,6 +188,11 @@ func TestResolverExpandStringValues(t *testing.T) {
 			output: "test_true",
 		},
 		{
+			name:   "Timestamp",
+			input:  "test_${env:TIMESTAMP}",
+			output: "test_2023-03-20T03:17:55.432328Z",
+		},
+		{
 			name:   "MultipleSameMatches",
 			input:  "test_${env:BOOL}_test_${env:BOOL}",
 			output: "test_true_test_true",
@@ -182,9 +205,21 @@ func TestResolverExpandStringValues(t *testing.T) {
 			output: "localhost:3044",
 		},
 		{
+			name:            "NestedDefaultProvider",
+			input:           "${test:localhost:${PORT}}",
+			output:          "localhost:3044",
+			defaultProvider: true,
+		},
+		{
 			name:   "EmbeddedInNested",
 			input:  "${test:${env:HOST}:${env:PORT}}",
 			output: "localhost:3044",
+		},
+		{
+			name:            "EmbeddedInNestedDefaultProvider",
+			input:           "${test:${HOST}:${PORT}}",
+			output:          "localhost:3044",
+			defaultProvider: true,
 		},
 		{
 			name:   "EmbeddedAndNested",
@@ -203,9 +238,21 @@ func TestResolverExpandStringValues(t *testing.T) {
 			output: "env:HOST}",
 		},
 		{
+			name:            "NoMatchMissingOpeningBracketDefaultProvider",
+			input:           "env:HOST}",
+			output:          "env:HOST}",
+			defaultProvider: true,
+		},
+		{
 			name:   "NoMatchMissingClosingBracket",
 			input:  "${HOST",
 			output: "${HOST",
+		},
+		{
+			name:            "NoMatchMissingClosingBracketDefaultProvider",
+			input:           "${HOST",
+			output:          "${HOST",
+			defaultProvider: true,
 		},
 		{
 			name:   "NoMatchBracketsWithout$",
@@ -213,9 +260,21 @@ func TestResolverExpandStringValues(t *testing.T) {
 			output: "HO{ST}",
 		},
 		{
+			name:            "NoMatchBracketsWithout$DefaultProvider",
+			input:           "HO{ST}",
+			output:          "HO{ST}",
+			defaultProvider: true,
+		},
+		{
 			name:   "NoMatchOnlyMissingClosingBracket",
 			input:  "${env:HOST${env:PORT?os=${env:OS",
 			output: "${env:HOST${env:PORT?os=${env:OS",
+		},
+		{
+			name:            "NoMatchOnlyMissingClosingBracketDefaultProvider",
+			input:           "${env:HOST${env:PORT?os=${env:OS",
+			output:          "${env:HOST${env:PORT?os=${env:OS",
+			defaultProvider: true,
 		},
 		{
 			name:   "NoMatchOnlyMissingOpeningBracket",
@@ -223,9 +282,21 @@ func TestResolverExpandStringValues(t *testing.T) {
 			output: "env:HOST}env:PORT}?os=env:OS}",
 		},
 		{
+			name:            "NoMatchOnlyMissingOpeningBracketDefaultProvider",
+			input:           "env:HOST}env:PORT}?os=env:OS}",
+			output:          "env:HOST}env:PORT}?os=env:OS}",
+			defaultProvider: true,
+		},
+		{
 			name:   "NoMatchCloseBeforeOpen",
 			input:  "env:HOST}${env:PORT",
 			output: "env:HOST}${env:PORT",
+		},
+		{
+			name:            "NoMatchCloseBeforeOpenDefaultProvider",
+			input:           "env:HOST}${env:PORT",
+			output:          "env:HOST}${env:PORT",
+			defaultProvider: true,
 		},
 		{
 			name:   "NoMatchOldStyleNested",
@@ -237,6 +308,12 @@ func TestResolverExpandStringValues(t *testing.T) {
 			name:   "PartialMatchMissingOpeningBracketFirst",
 			input:  "env:HOST}${env:PORT}",
 			output: "env:HOST}3044",
+		},
+		{
+			name:            "PartialMatchMissingOpeningBracketFirstDefaultProvider",
+			input:           "env:HOST}${PORT}",
+			output:          "env:HOST}3044",
+			defaultProvider: true,
 		},
 		{
 			name:   "PartialMatchMissingOpeningBracketLast",
@@ -283,6 +360,28 @@ func TestResolverExpandStringValues(t *testing.T) {
 			input:  "${env:HOST${env:PORT}?os=${env:OS&pr=${env:PR}",
 			output: "${env:HOST3044?os=${env:OS&pr=amd",
 		},
+		{
+			name:   "SchemeAfterNoSchemeIsExpanded",
+			input:  "${HOST}${env:PORT}",
+			output: "${HOST}3044",
+		},
+		{
+			name:            "SchemeAfterNoSchemeIsExpandedDefaultProvider",
+			input:           "${HOST}${env:PORT}",
+			output:          "localhost3044",
+			defaultProvider: true,
+		},
+		{
+			name:   "SchemeBeforeNoSchemeIsExpanded",
+			input:  "${env:HOST}${PORT}",
+			output: "localhost${PORT}",
+		},
+		{
+			name:            "SchemeBeforeNoSchemeIsExpandedDefaultProvider",
+			input:           "${env:HOST}${PORT}",
+			output:          "localhost3044",
+			defaultProvider: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -295,7 +394,12 @@ func TestResolverExpandStringValues(t *testing.T) {
 				return NewRetrieved(uri[5:])
 			})
 
-			resolver, err := NewResolver(ResolverSettings{URIs: []string{"input:"}, Providers: makeMapProvidersMap(provider, newEnvProvider(), testProvider), Converters: nil})
+			envProvider := newEnvProvider()
+			set := ResolverSettings{URIs: []string{"input:"}, ProviderFactories: []ProviderFactory{provider, envProvider, testProvider}, ConverterFactories: nil}
+			if tt.defaultProvider {
+				set.DefaultScheme = "env"
+			}
+			resolver, err := NewResolver(set)
 			require.NoError(t, err)
 
 			cfgMap, err := resolver.Resolve(context.Background())
@@ -305,31 +409,38 @@ func TestResolverExpandStringValues(t *testing.T) {
 	}
 }
 
-func newEnvProvider() Provider {
+func newEnvProvider() ProviderFactory {
 	return newFakeProvider("env", func(_ context.Context, uri string, _ WatcherFunc) (*Retrieved, error) {
+		// When using `env` as the default scheme for tests, the uri will not include `env:`.
+		// Instead of duplicating the switch cases, the scheme is added instead.
+		if uri[0:4] != "env:" {
+			uri = "env:" + uri
+		}
 		switch uri {
 		case "env:COMPLEX_VALUE":
-			return NewRetrieved([]any{"localhost:3042"})
+			return NewRetrievedFromYAML([]byte("[localhost:3042]"))
 		case "env:HOST":
-			return NewRetrieved("localhost")
+			return NewRetrievedFromYAML([]byte("localhost"))
+		case "env:TIMESTAMP":
+			return NewRetrievedFromYAML([]byte("2023-03-20T03:17:55.432328Z"))
 		case "env:OS":
-			return NewRetrieved("ubuntu")
+			return NewRetrievedFromYAML([]byte("ubuntu"))
 		case "env:PR":
-			return NewRetrieved("amd")
+			return NewRetrievedFromYAML([]byte("amd"))
 		case "env:PORT":
-			return NewRetrieved(3044)
+			return NewRetrievedFromYAML([]byte("3044"))
 		case "env:INT":
-			return NewRetrieved(1)
+			return NewRetrievedFromYAML([]byte("1"))
 		case "env:INT32":
-			return NewRetrieved(32)
+			return NewRetrieved(int32(32), withStringRepresentation("32"))
 		case "env:INT64":
-			return NewRetrieved(64)
+			return NewRetrieved(int64(64), withStringRepresentation("64"))
 		case "env:FLOAT32":
-			return NewRetrieved(float32(3.25))
+			return NewRetrieved(float32(3.25), withStringRepresentation("3.25"))
 		case "env:FLOAT64":
-			return NewRetrieved(float64(6.4))
+			return NewRetrieved(float64(6.4), withStringRepresentation("6.4"))
 		case "env:BOOL":
-			return NewRetrieved(true)
+			return NewRetrievedFromYAML([]byte("true"))
 		}
 		return nil, errors.New("impossible")
 	})
@@ -369,7 +480,7 @@ func TestResolverExpandReturnError(t *testing.T) {
 				return nil, myErr
 			})
 
-			resolver, err := NewResolver(ResolverSettings{URIs: []string{"input:"}, Providers: makeMapProvidersMap(provider, testProvider), Converters: nil})
+			resolver, err := NewResolver(ResolverSettings{URIs: []string{"input:"}, ProviderFactories: []ProviderFactory{provider, testProvider}, ConverterFactories: nil})
 			require.NoError(t, err)
 
 			_, err = resolver.Resolve(context.Background())
@@ -388,7 +499,7 @@ func TestResolverInfiniteExpand(t *testing.T) {
 		return NewRetrieved(receiverValue)
 	})
 
-	resolver, err := NewResolver(ResolverSettings{URIs: []string{"input:"}, Providers: makeMapProvidersMap(provider, testProvider), Converters: nil})
+	resolver, err := NewResolver(ResolverSettings{URIs: []string{"input:"}, ProviderFactories: []ProviderFactory{provider, testProvider}, ConverterFactories: nil})
 	require.NoError(t, err)
 
 	_, err = resolver.Resolve(context.Background())
@@ -404,12 +515,8 @@ func TestResolverExpandInvalidScheme(t *testing.T) {
 		panic("must not be called")
 	})
 
-	resolver, err := NewResolver(ResolverSettings{URIs: []string{"input:"}, Providers: makeMapProvidersMap(provider, testProvider), Converters: nil})
-	require.NoError(t, err)
-
-	_, err = resolver.Resolve(context.Background())
-
-	assert.EqualError(t, err, `invalid uri: "g_c_s:VALUE"`)
+	_, err := NewResolver(ResolverSettings{URIs: []string{"input:"}, ProviderFactories: []ProviderFactory{provider, testProvider}, ConverterFactories: nil})
+	assert.ErrorContains(t, err, "invalid 'confmap.Provider' scheme")
 }
 
 func TestResolverExpandInvalidOpaqueValue(t *testing.T) {
@@ -421,7 +528,7 @@ func TestResolverExpandInvalidOpaqueValue(t *testing.T) {
 		panic("must not be called")
 	})
 
-	resolver, err := NewResolver(ResolverSettings{URIs: []string{"input:"}, Providers: makeMapProvidersMap(provider, testProvider), Converters: nil})
+	resolver, err := NewResolver(ResolverSettings{URIs: []string{"input:"}, ProviderFactories: []ProviderFactory{provider, testProvider}, ConverterFactories: nil})
 	require.NoError(t, err)
 
 	_, err = resolver.Resolve(context.Background())
@@ -437,25 +544,22 @@ func TestResolverExpandUnsupportedScheme(t *testing.T) {
 		panic("must not be called")
 	})
 
-	resolver, err := NewResolver(ResolverSettings{URIs: []string{"input:"}, Providers: makeMapProvidersMap(provider, testProvider), Converters: nil})
+	resolver, err := NewResolver(ResolverSettings{URIs: []string{"input:"}, ProviderFactories: []ProviderFactory{provider, testProvider}, ConverterFactories: nil})
 	require.NoError(t, err)
 
 	_, err = resolver.Resolve(context.Background())
 	assert.EqualError(t, err, `scheme "unsupported" is not supported for uri "unsupported:VALUE"`)
 }
 
-func TestResolverExpandStringValueInvalidReturnValue(t *testing.T) {
+func TestResolverDefaultProviderExpand(t *testing.T) {
 	provider := newFakeProvider("input", func(context.Context, string, WatcherFunc) (*Retrieved, error) {
-		return NewRetrieved(map[string]any{"test": "localhost:${test:PORT}"})
+		return NewRetrieved(map[string]any{"foo": "${HOST}"})
 	})
 
-	testProvider := newFakeProvider("test", func(context.Context, string, WatcherFunc) (*Retrieved, error) {
-		return NewRetrieved([]any{1243})
-	})
-
-	resolver, err := NewResolver(ResolverSettings{URIs: []string{"input:"}, Providers: makeMapProvidersMap(provider, testProvider), Converters: nil})
+	resolver, err := NewResolver(ResolverSettings{URIs: []string{"input:"}, ProviderFactories: []ProviderFactory{provider, newEnvProvider()}, DefaultScheme: "env", ConverterFactories: nil})
 	require.NoError(t, err)
 
-	_, err = resolver.Resolve(context.Background())
-	assert.EqualError(t, err, `expanding ${test:PORT}, expected convertable to string value type, got ['ӛ']([]interface {})`)
+	cfgMap, err := resolver.Resolve(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, map[string]any{"foo": "localhost"}, cfgMap.ToStringMap())
 }

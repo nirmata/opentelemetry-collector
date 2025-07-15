@@ -13,6 +13,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata/metricdatatest"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
@@ -20,17 +22,21 @@ import (
 
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/component/componenttest"
-	"go.opentelemetry.io/collector/config/configretry"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/consumer/consumererror"
 	"go.opentelemetry.io/collector/consumer/consumertest"
 	"go.opentelemetry.io/collector/exporter"
 	"go.opentelemetry.io/collector/exporter/exporterhelper/internal"
+	"go.opentelemetry.io/collector/exporter/exporterhelper/internal/hosttest"
+	"go.opentelemetry.io/collector/exporter/exporterhelper/internal/metadatatest"
+	"go.opentelemetry.io/collector/exporter/exporterhelper/internal/oteltest"
+	"go.opentelemetry.io/collector/exporter/exporterhelper/internal/queue"
+	"go.opentelemetry.io/collector/exporter/exporterhelper/internal/requesttest"
+	"go.opentelemetry.io/collector/exporter/exporterhelper/internal/sendertest"
+	"go.opentelemetry.io/collector/exporter/exporterhelper/internal/storagetest"
 	"go.opentelemetry.io/collector/exporter/exportertest"
-	"go.opentelemetry.io/collector/internal/obsreportconfig/obsmetrics"
-	"go.opentelemetry.io/collector/internal/testdata"
-	"go.opentelemetry.io/collector/obsreport/obsreporttest"
 	"go.opentelemetry.io/collector/pdata/ptrace"
+	"go.opentelemetry.io/collector/pdata/testdata"
 )
 
 const (
@@ -38,52 +44,58 @@ const (
 )
 
 var (
-	fakeTracesExporterName   = component.NewIDWithName("fake_traces_exporter", "with_name")
-	fakeTracesExporterConfig = struct{}{}
+	fakeTracesName   = component.MustNewIDWithName("fake_traces_exporter", "with_name")
+	fakeTracesConfig = struct{}{}
 )
 
 func TestTracesRequest(t *testing.T) {
-	mr := newTracesRequest(testdata.GenerateTraces(1), nil)
+	mr := newTracesRequest(testdata.GenerateTraces(1))
 
 	traceErr := consumererror.NewTraces(errors.New("some error"), ptrace.NewTraces())
-	assert.EqualValues(t, newTracesRequest(ptrace.NewTraces(), nil), mr.(RequestErrorHandler).OnError(traceErr))
+	assert.Equal(t, newTracesRequest(ptrace.NewTraces()), mr.(RequestErrorHandler).OnError(traceErr))
 }
 
-func TestTracesExporter_InvalidName(t *testing.T) {
-	te, err := NewTracesExporter(context.Background(), exportertest.NewNopCreateSettings(), nil, newTraceDataPusher(nil))
+func TestTraces_InvalidName(t *testing.T) {
+	te, err := NewTraces(context.Background(), exportertest.NewNopSettings(exportertest.NopType), nil, newTraceDataPusher(nil))
 	require.Nil(t, te)
 	require.Equal(t, errNilConfig, err)
 }
 
-func TestTracesExporter_NilLogger(t *testing.T) {
-	te, err := NewTracesExporter(context.Background(), exporter.CreateSettings{}, &fakeTracesExporterConfig, newTraceDataPusher(nil))
+func TestTraces_NilLogger(t *testing.T) {
+	te, err := NewTraces(context.Background(), exporter.Settings{}, &fakeTracesConfig, newTraceDataPusher(nil))
 	require.Nil(t, te)
 	require.Equal(t, errNilLogger, err)
 }
 
-func TestTracesRequestExporter_NilLogger(t *testing.T) {
-	te, err := NewTracesRequestExporter(context.Background(), exporter.CreateSettings{}, (&fakeRequestConverter{}).requestFromTracesFunc)
+func TestTracesRequest_NilLogger(t *testing.T) {
+	te, err := NewTracesRequest(context.Background(), exporter.Settings{}, requesttest.RequestFromTracesFunc(nil), sendertest.NewNopSenderFunc[Request]())
 	require.Nil(t, te)
 	require.Equal(t, errNilLogger, err)
 }
 
-func TestTracesExporter_NilPushTraceData(t *testing.T) {
-	te, err := NewTracesExporter(context.Background(), exportertest.NewNopCreateSettings(), &fakeTracesExporterConfig, nil)
+func TestTraces_NilPushTraceData(t *testing.T) {
+	te, err := NewTraces(context.Background(), exportertest.NewNopSettings(exportertest.NopType), &fakeTracesConfig, nil)
 	require.Nil(t, te)
-	require.Equal(t, errNilPushTraceData, err)
+	require.Equal(t, errNilPushTraces, err)
 }
 
-func TestTracesRequestExporter_NilTracesConverter(t *testing.T) {
-	te, err := NewTracesRequestExporter(context.Background(), exportertest.NewNopCreateSettings(), nil)
+func TestTracesRequest_NilTracesConverter(t *testing.T) {
+	te, err := NewTracesRequest(context.Background(), exportertest.NewNopSettings(exportertest.NopType), nil, sendertest.NewNopSenderFunc[Request]())
 	require.Nil(t, te)
 	require.Equal(t, errNilTracesConverter, err)
 }
 
-func TestTracesExporter_Default(t *testing.T) {
+func TestTracesRequest_NilPushTraceData(t *testing.T) {
+	te, err := NewTracesRequest(context.Background(), exportertest.NewNopSettings(exportertest.NopType), requesttest.RequestFromTracesFunc(nil), nil)
+	require.Nil(t, te)
+	require.Equal(t, errNilConsumeRequest, err)
+}
+
+func TestTraces_Default(t *testing.T) {
 	td := ptrace.NewTraces()
-	te, err := NewTracesExporter(context.Background(), exportertest.NewNopCreateSettings(), &fakeTracesExporterConfig, newTraceDataPusher(nil))
+	te, err := NewTraces(context.Background(), exportertest.NewNopSettings(exportertest.NopType), &fakeTracesConfig, newTraceDataPusher(nil))
 	assert.NotNil(t, te)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	assert.Equal(t, consumer.Capabilities{MutatesData: false}, te.Capabilities())
 	assert.NoError(t, te.Start(context.Background(), componenttest.NewNopHost()))
@@ -91,12 +103,12 @@ func TestTracesExporter_Default(t *testing.T) {
 	assert.NoError(t, te.Shutdown(context.Background()))
 }
 
-func TestTracesRequestExporter_Default(t *testing.T) {
+func TestTracesRequest_Default(t *testing.T) {
 	td := ptrace.NewTraces()
-	te, err := NewTracesRequestExporter(context.Background(), exportertest.NewNopCreateSettings(),
-		(&fakeRequestConverter{}).requestFromTracesFunc)
+	te, err := NewTracesRequest(context.Background(), exportertest.NewNopSettings(exportertest.NopType),
+		requesttest.RequestFromTracesFunc(nil), sendertest.NewNopSenderFunc[Request]())
 	assert.NotNil(t, te)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	assert.Equal(t, consumer.Capabilities{MutatesData: false}, te.Capabilities())
 	assert.NoError(t, te.Start(context.Background(), componenttest.NewNopHost()))
@@ -104,29 +116,29 @@ func TestTracesRequestExporter_Default(t *testing.T) {
 	assert.NoError(t, te.Shutdown(context.Background()))
 }
 
-func TestTracesExporter_WithCapabilities(t *testing.T) {
+func TestTraces_WithCapabilities(t *testing.T) {
 	capabilities := consumer.Capabilities{MutatesData: true}
-	te, err := NewTracesExporter(context.Background(), exportertest.NewNopCreateSettings(), &fakeTracesExporterConfig, newTraceDataPusher(nil), WithCapabilities(capabilities))
+	te, err := NewTraces(context.Background(), exportertest.NewNopSettings(exportertest.NopType), &fakeTracesConfig, newTraceDataPusher(nil), WithCapabilities(capabilities))
 	assert.NotNil(t, te)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	assert.Equal(t, capabilities, te.Capabilities())
 }
 
-func TestTracesRequestExporter_WithCapabilities(t *testing.T) {
+func TestTracesRequest_WithCapabilities(t *testing.T) {
 	capabilities := consumer.Capabilities{MutatesData: true}
-	te, err := NewTracesRequestExporter(context.Background(), exportertest.NewNopCreateSettings(),
-		(&fakeRequestConverter{}).requestFromTracesFunc, WithCapabilities(capabilities))
+	te, err := NewTracesRequest(context.Background(), exportertest.NewNopSettings(exportertest.NopType),
+		requesttest.RequestFromTracesFunc(nil), sendertest.NewNopSenderFunc[Request](), WithCapabilities(capabilities))
 	assert.NotNil(t, te)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	assert.Equal(t, capabilities, te.Capabilities())
 }
 
-func TestTracesExporter_Default_ReturnError(t *testing.T) {
+func TestTraces_Default_ReturnError(t *testing.T) {
 	td := ptrace.NewTraces()
 	want := errors.New("my_error")
-	te, err := NewTracesExporter(context.Background(), exportertest.NewNopCreateSettings(), &fakeTracesExporterConfig, newTraceDataPusher(want))
+	te, err := NewTraces(context.Background(), exportertest.NewNopSettings(exportertest.NopType), &fakeTracesConfig, newTraceDataPusher(want))
 	require.NoError(t, err)
 	require.NotNil(t, te)
 
@@ -134,192 +146,235 @@ func TestTracesExporter_Default_ReturnError(t *testing.T) {
 	require.Equal(t, want, err)
 }
 
-func TestTracesRequestExporter_Default_ConvertError(t *testing.T) {
+func TestTracesRequest_Default_ConvertError(t *testing.T) {
 	td := ptrace.NewTraces()
 	want := errors.New("convert_error")
-	te, err := NewTracesRequestExporter(context.Background(), exportertest.NewNopCreateSettings(),
-		(&fakeRequestConverter{tracesError: want}).requestFromTracesFunc)
+	te, err := NewTracesRequest(context.Background(), exportertest.NewNopSettings(exportertest.NopType),
+		requesttest.RequestFromTracesFunc(want), sendertest.NewNopSenderFunc[Request]())
 	require.NoError(t, err)
 	require.NotNil(t, te)
 	require.Equal(t, consumererror.NewPermanent(want), te.ConsumeTraces(context.Background(), td))
 }
 
-func TestTracesRequestExporter_Default_ExportError(t *testing.T) {
+func TestTracesRequest_Default_ExportError(t *testing.T) {
 	td := ptrace.NewTraces()
 	want := errors.New("export_error")
-	te, err := NewTracesRequestExporter(context.Background(), exportertest.NewNopCreateSettings(),
-		(&fakeRequestConverter{requestError: want}).requestFromTracesFunc)
+	te, err := NewTracesRequest(context.Background(), exportertest.NewNopSettings(exportertest.NopType),
+		requesttest.RequestFromTracesFunc(nil), sendertest.NewErrSenderFunc[Request](want))
 	require.NoError(t, err)
 	require.NotNil(t, te)
 	require.Equal(t, want, te.ConsumeTraces(context.Background(), td))
 }
 
-func TestTracesExporter_WithPersistentQueue(t *testing.T) {
-	qCfg := NewDefaultQueueSettings()
-	storageID := component.NewIDWithName("file_storage", "storage")
+func TestTraces_WithPersistentQueue(t *testing.T) {
+	fgOrigReadState := queue.PersistRequestContextOnRead
+	fgOrigWriteState := queue.PersistRequestContextOnWrite
+	qCfg := NewDefaultQueueConfig()
+	storageID := component.MustNewIDWithName("file_storage", "storage")
 	qCfg.StorageID = &storageID
-	rCfg := configretry.NewDefaultBackOffConfig()
-	ts := consumertest.TracesSink{}
-	set := exportertest.NewNopCreateSettings()
-	set.ID = component.NewIDWithName("test_traces", "with_persistent_queue")
-	te, err := NewTracesExporter(context.Background(), set, &fakeTracesExporterConfig, ts.ConsumeTraces, WithRetry(rCfg), WithQueue(qCfg))
-	require.NoError(t, err)
+	set := exportertest.NewNopSettings(exportertest.NopType)
+	set.ID = component.MustNewIDWithName("test_logs", "with_persistent_queue")
+	host := hosttest.NewHost(map[component.ID]component.Component{
+		storageID: storagetest.NewMockStorageExtension(nil),
+	})
+	spanCtx := oteltest.FakeSpanContext(t)
 
-	host := &mockHost{ext: map[component.ID]component.Component{
-		storageID: internal.NewMockStorageExtension(nil),
-	}}
-	require.NoError(t, te.Start(context.Background(), host))
-	t.Cleanup(func() { require.NoError(t, te.Shutdown(context.Background())) })
-
-	traces := testdata.GenerateTraces(2)
-	require.NoError(t, te.ConsumeTraces(context.Background(), traces))
-	require.Eventually(t, func() bool {
-		return len(ts.AllTraces()) == 1 && ts.SpanCount() == 2
-	}, 500*time.Millisecond, 10*time.Millisecond)
-}
-
-func TestTracesExporter_WithRecordMetrics(t *testing.T) {
-	tt, err := obsreporttest.SetupTelemetry(fakeTracesExporterName)
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, tt.Shutdown(context.Background())) })
-
-	te, err := NewTracesExporter(context.Background(), exporter.CreateSettings{ID: fakeTracesExporterName, TelemetrySettings: tt.TelemetrySettings, BuildInfo: component.NewDefaultBuildInfo()}, &fakeTracesExporterConfig, newTraceDataPusher(nil))
-	require.NoError(t, err)
-	require.NotNil(t, te)
-
-	checkRecordedMetricsForTracesExporter(t, tt, te, nil)
-}
-
-func TestTracesRequestExporter_WithRecordMetrics(t *testing.T) {
-	tt, err := obsreporttest.SetupTelemetry(fakeTracesExporterName)
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, tt.Shutdown(context.Background())) })
-
-	te, err := NewTracesRequestExporter(context.Background(),
-		exporter.CreateSettings{ID: fakeTracesExporterName, TelemetrySettings: tt.TelemetrySettings, BuildInfo: component.NewDefaultBuildInfo()},
-		(&fakeRequestConverter{}).requestFromTracesFunc)
-	require.NoError(t, err)
-	require.NotNil(t, te)
-
-	checkRecordedMetricsForTracesExporter(t, tt, te, nil)
-}
-
-func TestTracesExporter_WithRecordMetrics_ReturnError(t *testing.T) {
-	want := errors.New("my_error")
-	tt, err := obsreporttest.SetupTelemetry(fakeTracesExporterName)
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, tt.Shutdown(context.Background())) })
-
-	te, err := NewTracesExporter(context.Background(), exporter.CreateSettings{ID: fakeTracesExporterName, TelemetrySettings: tt.TelemetrySettings, BuildInfo: component.NewDefaultBuildInfo()}, &fakeTracesExporterConfig, newTraceDataPusher(want))
-	require.NoError(t, err)
-	require.NotNil(t, te)
-
-	checkRecordedMetricsForTracesExporter(t, tt, te, want)
-}
-
-func TestTracesRequestExporter_WithRecordMetrics_RequestSenderError(t *testing.T) {
-	want := errors.New("export_error")
-	tt, err := obsreporttest.SetupTelemetry(fakeTracesExporterName)
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, tt.Shutdown(context.Background())) })
-
-	te, err := NewTracesRequestExporter(context.Background(),
-		exporter.CreateSettings{ID: fakeTracesExporterName, TelemetrySettings: tt.TelemetrySettings, BuildInfo: component.NewDefaultBuildInfo()},
-		(&fakeRequestConverter{requestError: want}).requestFromTracesFunc)
-	require.NoError(t, err)
-	require.NotNil(t, te)
-
-	checkRecordedMetricsForTracesExporter(t, tt, te, want)
-}
-
-func TestTracesExporter_WithRecordEnqueueFailedMetrics(t *testing.T) {
-	tt, err := obsreporttest.SetupTelemetry(fakeTracesExporterName)
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, tt.Shutdown(context.Background())) })
-
-	rCfg := configretry.NewDefaultBackOffConfig()
-	qCfg := NewDefaultQueueSettings()
-	qCfg.NumConsumers = 1
-	qCfg.QueueSize = 2
-	wantErr := errors.New("some-error")
-	te, err := NewTracesExporter(context.Background(), exporter.CreateSettings{ID: fakeTracesExporterName, TelemetrySettings: tt.TelemetrySettings, BuildInfo: component.NewDefaultBuildInfo()}, &fakeTracesExporterConfig, newTraceDataPusher(wantErr), WithRetry(rCfg), WithQueue(qCfg))
-	require.NoError(t, err)
-	require.NotNil(t, te)
-
-	td := testdata.GenerateTraces(2)
-	const numBatches = 7
-	for i := 0; i < numBatches; i++ {
-		// errors are checked in the checkExporterEnqueueFailedTracesStats function below.
-		_ = te.ConsumeTraces(context.Background(), td)
+	tests := []struct {
+		name             string
+		fgEnabledOnWrite bool
+		fgEnabledOnRead  bool
+		wantData         bool
+		wantSpanCtx      bool
+	}{
+		{
+			name:     "feature_gate_disabled_on_write_and_read",
+			wantData: true,
+		},
+		{
+			name:             "feature_gate_enabled_on_write_and_read",
+			fgEnabledOnWrite: true,
+			fgEnabledOnRead:  true,
+			wantData:         true,
+			wantSpanCtx:      true,
+		},
+		{
+			name:            "feature_gate_disabled_on_write_enabled_on_read",
+			wantData:        true,
+			fgEnabledOnRead: true,
+		},
+		{
+			name:             "feature_gate_enabled_on_write_disabled_on_read",
+			fgEnabledOnWrite: true,
+			wantData:         false, // going back from enabled to disabled feature gate isn't supported
+		},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			queue.PersistRequestContextOnRead = func() bool { return tt.fgEnabledOnRead }
+			queue.PersistRequestContextOnWrite = func() bool { return tt.fgEnabledOnWrite }
+			t.Cleanup(func() {
+				queue.PersistRequestContextOnRead = fgOrigReadState
+				queue.PersistRequestContextOnWrite = fgOrigWriteState
+			})
 
-	// 2 batched must be in queue, and 5 batches (10 spans) rejected due to queue overflow
-	require.NoError(t, tt.CheckExporterEnqueueFailedTraces(int64(10)))
+			ts := consumertest.TracesSink{}
+			te, err := NewTraces(context.Background(), set, &fakeTracesConfig, ts.ConsumeTraces, WithQueue(qCfg))
+			require.NoError(t, err)
+			require.NoError(t, te.Start(context.Background(), host))
+			t.Cleanup(func() { require.NoError(t, te.Shutdown(context.Background())) })
+
+			traces := testdata.GenerateTraces(2)
+			require.NoError(t, te.ConsumeTraces(trace.ContextWithSpanContext(context.Background(), spanCtx), traces))
+			if tt.wantData {
+				require.Eventually(t, func() bool {
+					return len(ts.AllTraces()) == 1 && ts.SpanCount() == 2
+				}, 500*time.Millisecond, 10*time.Millisecond)
+			}
+
+			// check that the span context is persisted if the feature gate is enabled
+			if tt.wantSpanCtx {
+				assert.Len(t, ts.Contexts(), 1)
+				assert.Equal(t, spanCtx, trace.SpanContextFromContext(ts.Contexts()[0]))
+			}
+		})
+	}
 }
 
-func TestTracesExporter_WithSpan(t *testing.T) {
-	set := exportertest.NewNopCreateSettings()
+func TestTraces_WithRecordMetrics(t *testing.T) {
+	tt := componenttest.NewTelemetry()
+	t.Cleanup(func() { require.NoError(t, tt.Shutdown(context.Background())) })
+
+	te, err := NewTraces(context.Background(), exporter.Settings{ID: fakeTracesName, TelemetrySettings: tt.NewTelemetrySettings(), BuildInfo: component.NewDefaultBuildInfo()}, &fakeTracesConfig, newTraceDataPusher(nil))
+	require.NoError(t, err)
+	require.NotNil(t, te)
+
+	checkRecordedMetricsForTraces(t, tt, fakeTracesName, te, nil)
+}
+
+func TestTraces_pLogModifiedDownStream_WithRecordMetrics(t *testing.T) {
+	tt := componenttest.NewTelemetry()
+	t.Cleanup(func() { require.NoError(t, tt.Shutdown(context.Background())) })
+
+	te, err := NewTraces(context.Background(), exporter.Settings{ID: fakeTracesName, TelemetrySettings: tt.NewTelemetrySettings(), BuildInfo: component.NewDefaultBuildInfo()}, &fakeTracesConfig, newTraceDataPusherModifiedDownstream(nil), WithCapabilities(consumer.Capabilities{MutatesData: true}))
+	assert.NotNil(t, te)
+	require.NoError(t, err)
+	td := testdata.GenerateTraces(2)
+
+	require.NoError(t, te.ConsumeTraces(context.Background(), td))
+	assert.Equal(t, 0, td.SpanCount())
+
+	metadatatest.AssertEqualExporterSentSpans(t, tt,
+		[]metricdata.DataPoint[int64]{
+			{
+				Attributes: attribute.NewSet(
+					attribute.String(internal.ExporterKey, fakeTracesName.String())),
+				Value: int64(2),
+			},
+		}, metricdatatest.IgnoreTimestamp(), metricdatatest.IgnoreExemplars())
+}
+
+func TestTracesRequest_WithRecordMetrics(t *testing.T) {
+	tt := componenttest.NewTelemetry()
+	t.Cleanup(func() { require.NoError(t, tt.Shutdown(context.Background())) })
+
+	te, err := NewTracesRequest(context.Background(),
+		exporter.Settings{ID: fakeTracesName, TelemetrySettings: tt.NewTelemetrySettings(), BuildInfo: component.NewDefaultBuildInfo()},
+		requesttest.RequestFromTracesFunc(nil), sendertest.NewNopSenderFunc[Request]())
+	require.NoError(t, err)
+	require.NotNil(t, te)
+
+	checkRecordedMetricsForTraces(t, tt, fakeTracesName, te, nil)
+}
+
+func TestTraces_WithRecordMetrics_ReturnError(t *testing.T) {
+	want := errors.New("my_error")
+	tt := componenttest.NewTelemetry()
+	t.Cleanup(func() { require.NoError(t, tt.Shutdown(context.Background())) })
+
+	te, err := NewTraces(context.Background(), exporter.Settings{ID: fakeTracesName, TelemetrySettings: tt.NewTelemetrySettings(), BuildInfo: component.NewDefaultBuildInfo()}, &fakeTracesConfig, newTraceDataPusher(want))
+	require.NoError(t, err)
+	require.NotNil(t, te)
+
+	checkRecordedMetricsForTraces(t, tt, fakeTracesName, te, want)
+}
+
+func TestTracesRequest_WithRecordMetrics_RequestSenderError(t *testing.T) {
+	want := errors.New("export_error")
+	tt := componenttest.NewTelemetry()
+	t.Cleanup(func() { require.NoError(t, tt.Shutdown(context.Background())) })
+
+	te, err := NewTracesRequest(context.Background(),
+		exporter.Settings{ID: fakeTracesName, TelemetrySettings: tt.NewTelemetrySettings(), BuildInfo: component.NewDefaultBuildInfo()},
+		requesttest.RequestFromTracesFunc(nil), sendertest.NewErrSenderFunc[Request](want))
+	require.NoError(t, err)
+	require.NotNil(t, te)
+
+	checkRecordedMetricsForTraces(t, tt, fakeTracesName, te, want)
+}
+
+func TestTraces_WithSpan(t *testing.T) {
+	set := exportertest.NewNopSettings(exportertest.NopType)
 	sr := new(tracetest.SpanRecorder)
 	set.TracerProvider = sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
 	otel.SetTracerProvider(set.TracerProvider)
 	defer otel.SetTracerProvider(nooptrace.NewTracerProvider())
 
-	te, err := NewTracesExporter(context.Background(), set, &fakeTracesExporterConfig, newTraceDataPusher(nil))
+	te, err := NewTraces(context.Background(), set, &fakeTracesConfig, newTraceDataPusher(nil))
 	require.NoError(t, err)
 	require.NotNil(t, te)
 
-	checkWrapSpanForTracesExporter(t, sr, set.TracerProvider.Tracer("test"), te, nil, 1)
+	checkWrapSpanForTraces(t, sr, set.TracerProvider.Tracer("test"), te, nil)
 }
 
-func TestTracesRequestExporter_WithSpan(t *testing.T) {
-	set := exportertest.NewNopCreateSettings()
+func TestTracesRequest_WithSpan(t *testing.T) {
+	set := exportertest.NewNopSettings(exportertest.NopType)
 	sr := new(tracetest.SpanRecorder)
 	set.TracerProvider = sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
 	otel.SetTracerProvider(set.TracerProvider)
 	defer otel.SetTracerProvider(nooptrace.NewTracerProvider())
 
-	te, err := NewTracesRequestExporter(context.Background(), set, (&fakeRequestConverter{}).requestFromTracesFunc)
+	te, err := NewTracesRequest(context.Background(), set, requesttest.RequestFromTracesFunc(nil), sendertest.NewNopSenderFunc[Request]())
 	require.NoError(t, err)
 	require.NotNil(t, te)
 
-	checkWrapSpanForTracesExporter(t, sr, set.TracerProvider.Tracer("test"), te, nil, 1)
+	checkWrapSpanForTraces(t, sr, set.TracerProvider.Tracer("test"), te, nil)
 }
 
-func TestTracesExporter_WithSpan_ReturnError(t *testing.T) {
-	set := exportertest.NewNopCreateSettings()
+func TestTraces_WithSpan_ReturnError(t *testing.T) {
+	set := exportertest.NewNopSettings(exportertest.NopType)
 	sr := new(tracetest.SpanRecorder)
 	set.TracerProvider = sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
 	otel.SetTracerProvider(set.TracerProvider)
 	defer otel.SetTracerProvider(nooptrace.NewTracerProvider())
 
 	want := errors.New("my_error")
-	te, err := NewTracesExporter(context.Background(), set, &fakeTracesExporterConfig, newTraceDataPusher(want))
+	te, err := NewTraces(context.Background(), set, &fakeTracesConfig, newTraceDataPusher(want))
 	require.NoError(t, err)
 	require.NotNil(t, te)
 
-	checkWrapSpanForTracesExporter(t, sr, set.TracerProvider.Tracer("test"), te, want, 1)
+	checkWrapSpanForTraces(t, sr, set.TracerProvider.Tracer("test"), te, want)
 }
 
-func TestTracesRequestExporter_WithSpan_ExportError(t *testing.T) {
-	set := exportertest.NewNopCreateSettings()
+func TestTracesRequest_WithSpan_ExportError(t *testing.T) {
+	set := exportertest.NewNopSettings(exportertest.NopType)
 	sr := new(tracetest.SpanRecorder)
 	set.TracerProvider = sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
 	otel.SetTracerProvider(set.TracerProvider)
 	defer otel.SetTracerProvider(nooptrace.NewTracerProvider())
 
 	want := errors.New("export_error")
-	te, err := NewTracesRequestExporter(context.Background(), set, (&fakeRequestConverter{requestError: want}).requestFromTracesFunc)
+	te, err := NewTracesRequest(context.Background(), set, requesttest.RequestFromTracesFunc(nil), sendertest.NewErrSenderFunc[Request](want))
 	require.NoError(t, err)
 	require.NotNil(t, te)
 
-	checkWrapSpanForTracesExporter(t, sr, set.TracerProvider.Tracer("test"), te, want, 1)
+	checkWrapSpanForTraces(t, sr, set.TracerProvider.Tracer("test"), te, want)
 }
 
-func TestTracesExporter_WithShutdown(t *testing.T) {
+func TestTraces_WithShutdown(t *testing.T) {
 	shutdownCalled := false
 	shutdown := func(context.Context) error { shutdownCalled = true; return nil }
 
-	te, err := NewTracesExporter(context.Background(), exportertest.NewNopCreateSettings(), &fakeTracesExporterConfig, newTraceDataPusher(nil), WithShutdown(shutdown))
+	te, err := NewTraces(context.Background(), exportertest.NewNopSettings(exportertest.NopType), &fakeTracesConfig, newTraceDataPusher(nil), WithShutdown(shutdown))
 	assert.NotNil(t, te)
 	assert.NoError(t, err)
 
@@ -328,12 +383,12 @@ func TestTracesExporter_WithShutdown(t *testing.T) {
 	assert.True(t, shutdownCalled)
 }
 
-func TestTracesRequestExporter_WithShutdown(t *testing.T) {
+func TestTracesRequest_WithShutdown(t *testing.T) {
 	shutdownCalled := false
 	shutdown := func(context.Context) error { shutdownCalled = true; return nil }
 
-	te, err := NewTracesRequestExporter(context.Background(), exportertest.NewNopCreateSettings(),
-		(&fakeRequestConverter{}).requestFromTracesFunc, WithShutdown(shutdown))
+	te, err := NewTracesRequest(context.Background(), exportertest.NewNopSettings(exportertest.NopType),
+		requesttest.RequestFromTracesFunc(nil), sendertest.NewNopSenderFunc[Request](), WithShutdown(shutdown))
 	assert.NotNil(t, te)
 	assert.NoError(t, err)
 
@@ -342,38 +397,45 @@ func TestTracesRequestExporter_WithShutdown(t *testing.T) {
 	assert.True(t, shutdownCalled)
 }
 
-func TestTracesExporter_WithShutdown_ReturnError(t *testing.T) {
+func TestTraces_WithShutdown_ReturnError(t *testing.T) {
 	want := errors.New("my_error")
 	shutdownErr := func(context.Context) error { return want }
 
-	te, err := NewTracesExporter(context.Background(), exportertest.NewNopCreateSettings(), &fakeTracesExporterConfig, newTraceDataPusher(nil), WithShutdown(shutdownErr))
+	te, err := NewTraces(context.Background(), exportertest.NewNopSettings(exportertest.NopType), &fakeTracesConfig, newTraceDataPusher(nil), WithShutdown(shutdownErr))
 	assert.NotNil(t, te)
 	assert.NoError(t, err)
 
 	assert.NoError(t, te.Start(context.Background(), componenttest.NewNopHost()))
-	assert.Equal(t, te.Shutdown(context.Background()), want)
+	assert.Equal(t, want, te.Shutdown(context.Background()))
 }
 
-func TestTracesRequestExporter_WithShutdown_ReturnError(t *testing.T) {
+func TestTracesRequest_WithShutdown_ReturnError(t *testing.T) {
 	want := errors.New("my_error")
 	shutdownErr := func(context.Context) error { return want }
 
-	te, err := NewTracesRequestExporter(context.Background(), exportertest.NewNopCreateSettings(),
-		(&fakeRequestConverter{}).requestFromTracesFunc, WithShutdown(shutdownErr))
+	te, err := NewTracesRequest(context.Background(), exportertest.NewNopSettings(exportertest.NopType),
+		requesttest.RequestFromTracesFunc(nil), sendertest.NewNopSenderFunc[Request](), WithShutdown(shutdownErr))
 	assert.NotNil(t, te)
 	assert.NoError(t, err)
 
 	assert.NoError(t, te.Start(context.Background(), componenttest.NewNopHost()))
-	assert.Equal(t, te.Shutdown(context.Background()), want)
+	assert.Equal(t, want, te.Shutdown(context.Background()))
 }
 
 func newTraceDataPusher(retError error) consumer.ConsumeTracesFunc {
-	return func(ctx context.Context, td ptrace.Traces) error {
+	return func(context.Context, ptrace.Traces) error {
 		return retError
 	}
 }
 
-func checkRecordedMetricsForTracesExporter(t *testing.T, tt obsreporttest.TestTelemetry, te exporter.Traces, wantError error) {
+func newTraceDataPusherModifiedDownstream(retError error) consumer.ConsumeTracesFunc {
+	return func(_ context.Context, trace ptrace.Traces) error {
+		trace.ResourceSpans().MoveAndAppendTo(ptrace.NewResourceSpansSlice())
+		return retError
+	}
+}
+
+func checkRecordedMetricsForTraces(t *testing.T, tt *componenttest.Telemetry, id component.ID, te exporter.Traces, wantError error) {
 	td := testdata.GenerateTraces(2)
 	const numBatches = 7
 	for i := 0; i < numBatches; i++ {
@@ -382,9 +444,23 @@ func checkRecordedMetricsForTracesExporter(t *testing.T, tt obsreporttest.TestTe
 
 	// TODO: When the new metrics correctly count partial dropped fix this.
 	if wantError != nil {
-		require.NoError(t, tt.CheckExporterTraces(0, int64(numBatches*td.SpanCount())))
+		metadatatest.AssertEqualExporterSendFailedSpans(t, tt,
+			[]metricdata.DataPoint[int64]{
+				{
+					Attributes: attribute.NewSet(
+						attribute.String(internal.ExporterKey, id.String())),
+					Value: int64(numBatches * td.SpanCount()),
+				},
+			}, metricdatatest.IgnoreTimestamp(), metricdatatest.IgnoreExemplars())
 	} else {
-		require.NoError(t, tt.CheckExporterTraces(int64(numBatches*td.SpanCount()), 0))
+		metadatatest.AssertEqualExporterSentSpans(t, tt,
+			[]metricdata.DataPoint[int64]{
+				{
+					Attributes: attribute.NewSet(
+						attribute.String(internal.ExporterKey, id.String())),
+					Value: int64(numBatches * td.SpanCount()),
+				},
+			}, metricdatatest.IgnoreTimestamp(), metricdatatest.IgnoreExemplars())
 	}
 }
 
@@ -398,29 +474,28 @@ func generateTraceTraffic(t *testing.T, tracer trace.Tracer, te exporter.Traces,
 	}
 }
 
-func checkWrapSpanForTracesExporter(t *testing.T, sr *tracetest.SpanRecorder, tracer trace.Tracer,
-	te exporter.Traces, wantError error, numSpans int64) { // nolint: unparam
+func checkWrapSpanForTraces(t *testing.T, sr *tracetest.SpanRecorder, tracer trace.Tracer, te exporter.Traces, wantError error) {
 	const numRequests = 5
 	generateTraceTraffic(t, tracer, te, numRequests, wantError)
 
 	// Inspection time!
 	gotSpanData := sr.Ended()
-	require.Equal(t, numRequests+1, len(gotSpanData))
+	require.Len(t, gotSpanData, numRequests+1)
 
 	parentSpan := gotSpanData[numRequests]
 	require.Equalf(t, fakeTraceParentSpanName, parentSpan.Name(), "SpanData %v", parentSpan)
 
 	for _, sd := range gotSpanData[:numRequests] {
 		require.Equalf(t, parentSpan.SpanContext(), sd.Parent(), "Exporter span not a child\nSpanData %v", sd)
-		checkStatus(t, sd, wantError)
+		oteltest.CheckStatus(t, sd, wantError)
 
-		sentSpans := numSpans
-		var failedToSendSpans int64
+		sentSpans := int64(1)
+		failedToSendSpans := int64(0)
 		if wantError != nil {
 			sentSpans = 0
-			failedToSendSpans = numSpans
+			failedToSendSpans = 1
 		}
-		require.Containsf(t, sd.Attributes(), attribute.KeyValue{Key: obsmetrics.SentSpansKey, Value: attribute.Int64Value(sentSpans)}, "SpanData %v", sd)
-		require.Containsf(t, sd.Attributes(), attribute.KeyValue{Key: obsmetrics.FailedToSendSpansKey, Value: attribute.Int64Value(failedToSendSpans)}, "SpanData %v", sd)
+		require.Containsf(t, sd.Attributes(), attribute.KeyValue{Key: internal.ItemsSent, Value: attribute.Int64Value(sentSpans)}, "SpanData %v", sd)
+		require.Containsf(t, sd.Attributes(), attribute.KeyValue{Key: internal.ItemsFailed, Value: attribute.Int64Value(failedToSendSpans)}, "SpanData %v", sd)
 	}
 }

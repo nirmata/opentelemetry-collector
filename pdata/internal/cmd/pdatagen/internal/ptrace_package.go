@@ -4,26 +4,28 @@
 package internal // import "go.opentelemetry.io/collector/pdata/internal/cmd/pdatagen/internal"
 
 var ptrace = &Package{
-	name: "ptrace",
-	path: "ptrace",
-	imports: []string{
-		`"sort"`,
-		``,
-		`"go.opentelemetry.io/collector/pdata/internal"`,
-		`"go.opentelemetry.io/collector/pdata/internal/data"`,
-		`otlptrace "go.opentelemetry.io/collector/pdata/internal/data/protogen/trace/v1"`,
-		`"go.opentelemetry.io/collector/pdata/pcommon"`,
-	},
-	testImports: []string{
-		`"testing"`,
-		`"unsafe"`,
-		``,
-		`"github.com/stretchr/testify/assert"`,
-		``,
-		`"go.opentelemetry.io/collector/pdata/internal"`,
-		`"go.opentelemetry.io/collector/pdata/internal/data"`,
-		`otlptrace "go.opentelemetry.io/collector/pdata/internal/data/protogen/trace/v1"`,
-		`"go.opentelemetry.io/collector/pdata/pcommon"`,
+	info: &PackageInfo{
+		name: "ptrace",
+		path: "ptrace",
+		imports: []string{
+			`"sort"`,
+			``,
+			`"go.opentelemetry.io/collector/pdata/internal"`,
+			`"go.opentelemetry.io/collector/pdata/internal/data"`,
+			`otlptrace "go.opentelemetry.io/collector/pdata/internal/data/protogen/trace/v1"`,
+			`"go.opentelemetry.io/collector/pdata/pcommon"`,
+		},
+		testImports: []string{
+			`"testing"`,
+			`"unsafe"`,
+			``,
+			`"github.com/stretchr/testify/assert"`,
+			``,
+			`"go.opentelemetry.io/collector/pdata/internal"`,
+			`"go.opentelemetry.io/collector/pdata/internal/data"`,
+			`otlptrace "go.opentelemetry.io/collector/pdata/internal/data/protogen/trace/v1"`,
+			`"go.opentelemetry.io/collector/pdata/pcommon"`,
+		},
 	},
 	structs: []baseStruct{
 		resourceSpansSlice,
@@ -83,6 +85,13 @@ var spanSlice = &sliceOfPtrs{
 	element:    span,
 }
 
+var flagsField = &primitiveField{
+	fieldName:  "Flags",
+	returnType: "uint32",
+	defaultVal: `uint32(0)`,
+	testVal:    `uint32(0xf)`,
+}
+
 var span = &messageValueStruct{
 	structName: "Span",
 	description: "// Span represents a single operation within a trace.\n" +
@@ -94,6 +103,7 @@ var span = &messageValueStruct{
 		traceStateField,
 		parentSpanIDField,
 		nameField,
+		flagsField,
 		&primitiveTypedField{
 			fieldName: "Kind",
 			returnType: &primitiveType{
@@ -167,6 +177,7 @@ var spanLink = &messageValueStruct{
 		traceIDField,
 		spanIDField,
 		traceStateField,
+		flagsField,
 		attributes,
 		droppedAttributesCount,
 	},

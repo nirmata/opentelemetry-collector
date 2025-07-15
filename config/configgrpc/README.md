@@ -15,8 +15,8 @@ configuration parameters are also defined under `tls` like server
 configuration. For more information, see [configtls
 README](../configtls/README.md).
 
-- [`balancer_name`](https://github.com/grpc/grpc-go/blob/master/examples/features/load_balancing/README.md)
-- `compression` Compression type to use among `gzip`, `snappy`, `zstd`, and `none`.
+- [`balancer_name`](https://github.com/grpc/grpc-go/blob/master/examples/features/load_balancing/README.md): Default before v0.103.0 is `pick_first`, default for v0.103.0 is `round_robin`. See [issue](https://github.com/open-telemetry/opentelemetry-collector/issues/10298). To restore the previous behavior, set `balancer_name` to `pick_first`.
+- `compression`: Compression type to use among `gzip`, `snappy`, `zstd`, and `none`.
 - `endpoint`: Valid value syntax available [here](https://github.com/grpc/grpc/blob/master/doc/naming.md)
 - [`tls`](../configtls/README.md)
 - `headers`: name/value pairs added to the request
@@ -27,6 +27,7 @@ README](../configtls/README.md).
 - [`read_buffer_size`](https://godoc.org/google.golang.org/grpc#ReadBufferSize)
 - [`write_buffer_size`](https://godoc.org/google.golang.org/grpc#WriteBufferSize)
 - [`auth`](../configauth/README.md)
+- [`middlewares`](../configmiddleware/README.md)
 
 Please note that [`per_rpc_auth`](https://pkg.go.dev/google.golang.org/grpc#PerRPCCredentials) which allows the credentials to send for every RPC is now moved to become an [extension](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/extension/bearertokenauthextension). Note that this feature isn't about sending the headers only during the initial connection as an `authorization` header under the `headers` would do: this is sent for every RPC performed during an established connection.
 
@@ -111,3 +112,4 @@ see [confignet README](../confignet/README.md).
 - [`tls`](../configtls/README.md)
 - [`write_buffer_size`](https://godoc.org/google.golang.org/grpc#WriteBufferSize)
 - [`auth`](../configauth/README.md)
+- [`middlewares`](../configmiddleware/README.md)

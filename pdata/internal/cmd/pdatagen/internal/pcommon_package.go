@@ -4,19 +4,21 @@
 package internal // import "go.opentelemetry.io/collector/pdata/internal/cmd/pdatagen/internal"
 
 var pcommon = &Package{
-	name: "pcommon",
-	path: "pcommon",
-	imports: []string{
-		`"go.opentelemetry.io/collector/pdata/internal"`,
-		`otlpcommon "go.opentelemetry.io/collector/pdata/internal/data/protogen/common/v1"`,
-		`otlpresource "go.opentelemetry.io/collector/pdata/internal/data/protogen/resource/v1"`,
-	},
-	testImports: []string{
-		`"testing"`,
-		``,
-		`"github.com/stretchr/testify/assert"`,
-		``,
-		`"go.opentelemetry.io/collector/pdata/internal"`,
+	info: &PackageInfo{
+		name: "pcommon",
+		path: "pcommon",
+		imports: []string{
+			`"go.opentelemetry.io/collector/pdata/internal"`,
+			`otlpcommon "go.opentelemetry.io/collector/pdata/internal/data/protogen/common/v1"`,
+			`otlpresource "go.opentelemetry.io/collector/pdata/internal/data/protogen/resource/v1"`,
+		},
+		testImports: []string{
+			`"testing"`,
+			``,
+			`"github.com/stretchr/testify/assert"`,
+			``,
+			`"go.opentelemetry.io/collector/pdata/internal"`,
+		},
 	},
 	structs: []baseStruct{
 		scope,
@@ -24,6 +26,9 @@ var pcommon = &Package{
 		byteSlice,
 		float64Slice,
 		uInt64Slice,
+		int64Slice,
+		int32Slice,
+		stringSlice,
 	},
 }
 
@@ -155,6 +160,13 @@ var resource = &messageValueStruct{
 	fields: []baseField{
 		attributes,
 		droppedAttributesCount,
+		&sliceField{
+			// Hide accessors for this field from 1.x public API since the proto field is experimental.
+			// It's available via the xpdata/entity.ResourceEntityRefs.
+			hideAccessors:   true,
+			originFieldName: "EntityRefs",
+			returnSlice:     entityRefSlice,
+		},
 	},
 }
 
@@ -164,19 +176,61 @@ var resourceField = &messageValueField{
 }
 
 var byteSlice = &primitiveSliceStruct{
-	structName:  "ByteSlice",
-	packageName: "pcommon",
-	itemType:    "byte",
+	structName:           "ByteSlice",
+	packageName:          "pcommon",
+	itemType:             "byte",
+	testOrigVal:          "1, 2, 3",
+	testInterfaceOrigVal: []any{1, 2, 3},
+	testSetVal:           "5",
+	testNewVal:           "1, 5, 3",
 }
 
 var float64Slice = &primitiveSliceStruct{
-	structName:  "Float64Slice",
-	packageName: "pcommon",
-	itemType:    "float64",
+	structName:           "Float64Slice",
+	packageName:          "pcommon",
+	itemType:             "float64",
+	testOrigVal:          "1, 2, 3",
+	testInterfaceOrigVal: []any{1, 2, 3},
+	testSetVal:           "5",
+	testNewVal:           "1, 5, 3",
 }
 
 var uInt64Slice = &primitiveSliceStruct{
-	structName:  "UInt64Slice",
-	packageName: "pcommon",
-	itemType:    "uint64",
+	structName:           "UInt64Slice",
+	packageName:          "pcommon",
+	itemType:             "uint64",
+	testOrigVal:          "1, 2, 3",
+	testInterfaceOrigVal: []any{1, 2, 3},
+	testSetVal:           "5",
+	testNewVal:           "1, 5, 3",
+}
+
+var int64Slice = &primitiveSliceStruct{
+	structName:           "Int64Slice",
+	packageName:          "pcommon",
+	itemType:             "int64",
+	testOrigVal:          "1, 2, 3",
+	testInterfaceOrigVal: []any{1, 2, 3},
+	testSetVal:           "5",
+	testNewVal:           "1, 5, 3",
+}
+
+var int32Slice = &primitiveSliceStruct{
+	structName:           "Int32Slice",
+	packageName:          "pcommon",
+	itemType:             "int32",
+	testOrigVal:          "1, 2, 3",
+	testInterfaceOrigVal: []any{1, 2, 3},
+	testSetVal:           "5",
+	testNewVal:           "1, 5, 3",
+}
+
+var stringSlice = &primitiveSliceStruct{
+	structName:           "StringSlice",
+	packageName:          "pcommon",
+	itemType:             "string",
+	testOrigVal:          `"a", "b", "c"`,
+	testInterfaceOrigVal: []any{`"a"`, `"b"`, `"c"`},
+	testSetVal:           `"d"`,
+	testNewVal:           `"a", "d", "c"`,
 }

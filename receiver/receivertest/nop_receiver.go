@@ -6,58 +6,61 @@ package receivertest // import "go.opentelemetry.io/collector/receiver/receivert
 import (
 	"context"
 
+	"github.com/google/uuid"
+
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/component/componenttest"
 	"go.opentelemetry.io/collector/consumer"
+	"go.opentelemetry.io/collector/consumer/xconsumer"
 	"go.opentelemetry.io/collector/receiver"
+	"go.opentelemetry.io/collector/receiver/xreceiver"
 )
 
-const typeStr = "nop"
+var NopType = component.MustNewType("nop")
 
-// NewNopCreateSettings returns a new nop settings for Create* functions.
-func NewNopCreateSettings() receiver.CreateSettings {
-	return receiver.CreateSettings{
+// NewNopSettings returns a new nop settings for Create*Receiver functions with the given type.
+func NewNopSettings(typ component.Type) receiver.Settings {
+	return receiver.Settings{
+		ID:                component.NewIDWithName(typ, uuid.NewString()),
 		TelemetrySettings: componenttest.NewNopTelemetrySettings(),
 		BuildInfo:         component.NewDefaultBuildInfo(),
 	}
 }
 
-// NewNopFactory returns a receiver.Factory that constructs nop receivers.
+// NewNopFactory returns a receiver.Factory that constructs nop receivers supporting all data types.
 func NewNopFactory() receiver.Factory {
-	return receiver.NewFactory(
-		"nop",
+	return xreceiver.NewFactory(
+		NopType,
 		func() component.Config { return &nopConfig{} },
-		receiver.WithTraces(createTraces, component.StabilityLevelStable),
-		receiver.WithMetrics(createMetrics, component.StabilityLevelStable),
-		receiver.WithLogs(createLogs, component.StabilityLevelStable))
-}
-
-func createTraces(context.Context, receiver.CreateSettings, component.Config, consumer.Traces) (receiver.Traces, error) {
-	return nopInstance, nil
-}
-
-func createMetrics(context.Context, receiver.CreateSettings, component.Config, consumer.Metrics) (receiver.Metrics, error) {
-	return nopInstance, nil
-}
-
-func createLogs(context.Context, receiver.CreateSettings, component.Config, consumer.Logs) (receiver.Logs, error) {
-	return nopInstance, nil
+		xreceiver.WithTraces(createTraces, component.StabilityLevelStable),
+		xreceiver.WithMetrics(createMetrics, component.StabilityLevelStable),
+		xreceiver.WithLogs(createLogs, component.StabilityLevelStable),
+		xreceiver.WithProfiles(createProfiles, component.StabilityLevelAlpha),
+	)
 }
 
 type nopConfig struct{}
 
+func createTraces(context.Context, receiver.Settings, component.Config, consumer.Traces) (receiver.Traces, error) {
+	return nopInstance, nil
+}
+
+func createMetrics(context.Context, receiver.Settings, component.Config, consumer.Metrics) (receiver.Metrics, error) {
+	return nopInstance, nil
+}
+
+func createLogs(context.Context, receiver.Settings, component.Config, consumer.Logs) (receiver.Logs, error) {
+	return nopInstance, nil
+}
+
+func createProfiles(context.Context, receiver.Settings, component.Config, xconsumer.Profiles) (xreceiver.Profiles, error) {
+	return nopInstance, nil
+}
+
 var nopInstance = &nopReceiver{}
 
-// nopReceiver stores consumed traces and metrics for testing purposes.
+// nopReceiver acts as a receiver for testing purposes.
 type nopReceiver struct {
 	component.StartFunc
 	component.ShutdownFunc
-}
-
-// NewNopBuilder returns a receiver.Builder that constructs nop receivers.
-func NewNopBuilder() *receiver.Builder {
-	nopFactory := NewNopFactory()
-	return receiver.NewBuilder(
-		map[component.ID]component.Config{component.NewID(typeStr): nopFactory.CreateDefaultConfig()},
-		map[component.Type]receiver.Factory{typeStr: nopFactory})
 }

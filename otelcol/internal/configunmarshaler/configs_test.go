@@ -18,6 +18,8 @@ import (
 	"go.opentelemetry.io/collector/receiver/receivertest"
 )
 
+var nopType = component.MustNewType("nop")
+
 var testKinds = []struct {
 	kind      string
 	factories map[component.Type]component.Factory
@@ -25,31 +27,31 @@ var testKinds = []struct {
 	{
 		kind: "receiver",
 		factories: map[component.Type]component.Factory{
-			"nop": receivertest.NewNopFactory(),
+			nopType: receivertest.NewNopFactory(),
 		},
 	},
 	{
 		kind: "processor",
 		factories: map[component.Type]component.Factory{
-			"nop": processortest.NewNopFactory(),
+			nopType: processortest.NewNopFactory(),
 		},
 	},
 	{
 		kind: "exporter",
 		factories: map[component.Type]component.Factory{
-			"nop": exportertest.NewNopFactory(),
+			nopType: exportertest.NewNopFactory(),
 		},
 	},
 	{
 		kind: "connector",
 		factories: map[component.Type]component.Factory{
-			"nop": connectortest.NewNopFactory(),
+			nopType: connectortest.NewNopFactory(),
 		},
 	},
 	{
 		kind: "extension",
 		factories: map[component.Type]component.Factory{
-			"nop": extensiontest.NewNopFactory(),
+			nopType: extensiontest.NewNopFactory(),
 		},
 	},
 }
@@ -65,8 +67,8 @@ func TestUnmarshal(t *testing.T) {
 			require.NoError(t, cfgs.Unmarshal(conf))
 
 			assert.Equal(t, map[component.ID]component.Config{
-				component.NewID("nop"):                       tk.factories["nop"].CreateDefaultConfig(),
-				component.NewIDWithName("nop", "my"+tk.kind): tk.factories["nop"].CreateDefaultConfig(),
+				component.NewID(nopType):                       tk.factories[nopType].CreateDefaultConfig(),
+				component.NewIDWithName(nopType, "my"+tk.kind): tk.factories[nopType].CreateDefaultConfig(),
 			}, cfgs.Configs())
 		})
 	}
@@ -75,7 +77,7 @@ func TestUnmarshal(t *testing.T) {
 func TestUnmarshalError(t *testing.T) {
 	for _, tk := range testKinds {
 		t.Run(tk.kind, func(t *testing.T) {
-			var testCases = []struct {
+			testCases := []struct {
 				name string
 				conf *confmap.Conf
 				// string that the error must contain
@@ -102,7 +104,7 @@ func TestUnmarshalError(t *testing.T) {
 					conf: confmap.NewFromStringMap(map[string]any{
 						"nosuch" + tk.kind: nil,
 					}),
-					expectedError: "unknown type: \"nosuch" + tk.kind + "\"",
+					expectedError: "unknown type: \"nosuch" + tk.kind + "\" for id: \"nosuch" + tk.kind + "\" (valid values: [nop])",
 				},
 				{
 					name: "duplicate",
@@ -126,7 +128,7 @@ func TestUnmarshalError(t *testing.T) {
 					conf: confmap.NewFromStringMap(map[string]any{
 						"nop": "tests",
 					}),
-					expectedError: "'[nop]' expected a map, got 'string'",
+					expectedError: "'[nop]' expected type 'map[string]interface {}', got unconvertible type 'string'",
 				},
 			}
 
@@ -134,10 +136,21 @@ func TestUnmarshalError(t *testing.T) {
 				t.Run(tt.name, func(t *testing.T) {
 					cfgs := NewConfigs(tk.factories)
 					err := cfgs.Unmarshal(tt.conf)
-					require.Error(t, err)
-					assert.Contains(t, err.Error(), tt.expectedError)
+					assert.ErrorContains(t, err, tt.expectedError)
 				})
 			}
 		})
 	}
+}
+
+func TestUnmarshal_LoggingExporter(t *testing.T) {
+	conf := confmap.NewFromStringMap(map[string]any{
+		"logging": nil,
+	})
+	factories := map[component.Type]component.Factory{
+		nopType: exportertest.NewNopFactory(),
+	}
+	cfgs := NewConfigs(factories)
+	err := cfgs.Unmarshal(conf)
+	assert.ErrorContains(t, err, "the logging exporter has been deprecated, use the debug exporter instead")
 }

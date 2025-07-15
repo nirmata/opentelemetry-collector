@@ -22,6 +22,8 @@ func TestSummaryDataPoint_MoveTo(t *testing.T) {
 	ms.MoveTo(dest)
 	assert.Equal(t, NewSummaryDataPoint(), ms)
 	assert.Equal(t, generateTestSummaryDataPoint(), dest)
+	dest.MoveTo(dest)
+	assert.Equal(t, generateTestSummaryDataPoint(), dest)
 	sharedState := internal.StateReadOnly
 	assert.Panics(t, func() { ms.MoveTo(newSummaryDataPoint(&otlpmetrics.SummaryDataPoint{}, &sharedState)) })
 	assert.Panics(t, func() { newSummaryDataPoint(&otlpmetrics.SummaryDataPoint{}, &sharedState).MoveTo(dest) })
@@ -73,9 +75,9 @@ func TestSummaryDataPoint_Count(t *testing.T) {
 
 func TestSummaryDataPoint_Sum(t *testing.T) {
 	ms := NewSummaryDataPoint()
-	assert.Equal(t, float64(0.0), ms.Sum())
+	assert.InDelta(t, float64(0.0), ms.Sum(), 0.01)
 	ms.SetSum(float64(17.13))
-	assert.Equal(t, float64(17.13), ms.Sum())
+	assert.InDelta(t, float64(17.13), ms.Sum(), 0.01)
 	sharedState := internal.StateReadOnly
 	assert.Panics(t, func() { newSummaryDataPoint(&otlpmetrics.SummaryDataPoint{}, &sharedState).SetSum(float64(17.13)) })
 }

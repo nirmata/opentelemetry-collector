@@ -16,7 +16,12 @@ connectors:
 service:
   telemetry:
     metrics:
-      address: localhost:8888
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: "localhost"
+                port: 9999
   extensions: [nop]
   pipelines:
     traces:

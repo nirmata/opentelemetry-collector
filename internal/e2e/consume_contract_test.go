@@ -7,36 +7,53 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/configgrpc"
+	"go.opentelemetry.io/collector/config/configoptional"
 	"go.opentelemetry.io/collector/config/configretry"
 	"go.opentelemetry.io/collector/config/configtls"
+	"go.opentelemetry.io/collector/confmap"
 	"go.opentelemetry.io/collector/exporter/exporterhelper"
 	"go.opentelemetry.io/collector/exporter/exportertest"
 	"go.opentelemetry.io/collector/exporter/otlpexporter"
 	"go.opentelemetry.io/collector/internal/testutil"
+	"go.opentelemetry.io/collector/pipeline"
 	"go.opentelemetry.io/collector/receiver/otlpreceiver"
 )
+
+// GetOrInsertDefault is a helper function to get or insert a default value for a configoptional.Optional type.
+func GetOrInsertDefault[T any](t *testing.T, opt *configoptional.Optional[T]) *T {
+	if opt.HasValue() {
+		return opt.Get()
+	}
+
+	empty := confmap.NewFromStringMap(map[string]any{})
+	require.NoError(t, empty.Unmarshal(opt))
+	val := opt.Get()
+	require.NotNil(t, "Expected a default value to be set for %T", val)
+	return val
+}
 
 func testExporterConfig(endpoint string) component.Config {
 	retryConfig := configretry.NewDefaultBackOffConfig()
 	retryConfig.InitialInterval = time.Millisecond // interval is short for the test purposes
 	return &otlpexporter.Config{
-		QueueConfig: exporterhelper.QueueSettings{Enabled: false},
+		QueueConfig: exporterhelper.QueueBatchConfig{Enabled: false},
 		RetryConfig: retryConfig,
-		GRPCClientSettings: configgrpc.GRPCClientSettings{
+		ClientConfig: configgrpc.ClientConfig{
 			Endpoint: endpoint,
-			TLSSetting: configtls.TLSClientSetting{
+			TLS: configtls.ClientConfig{
 				Insecure: true,
 			},
 		},
 	}
 }
 
-func testReceiverConfig(endpoint string) component.Config {
+func testReceiverConfig(t *testing.T, endpoint string) component.Config {
 	cfg := otlpreceiver.NewFactory().CreateDefaultConfig()
-	cfg.(*otlpreceiver.Config).HTTP = nil
-	cfg.(*otlpreceiver.Config).GRPC.NetAddr.Endpoint = endpoint
+	GetOrInsertDefault(t, &cfg.(*otlpreceiver.Config).GRPC).NetAddr.Endpoint = endpoint
 	return cfg
 }
 
@@ -48,10 +65,10 @@ func TestConsumeContractOtlpLogs(t *testing.T) {
 		T:                    t,
 		NumberOfTestElements: 10,
 		ExporterFactory:      otlpexporter.NewFactory(),
-		DataType:             component.DataTypeLogs,
+		Signal:               pipeline.SignalLogs,
 		ExporterConfig:       testExporterConfig(addr),
 		ReceiverFactory:      otlpreceiver.NewFactory(),
-		ReceiverConfig:       testReceiverConfig(addr),
+		ReceiverConfig:       testReceiverConfig(t, addr),
 	})
 }
 
@@ -60,11 +77,11 @@ func TestConsumeContractOtlpTraces(t *testing.T) {
 	exportertest.CheckConsumeContract(exportertest.CheckConsumeContractParams{
 		T:                    t,
 		NumberOfTestElements: 10,
-		DataType:             component.DataTypeTraces,
+		Signal:               pipeline.SignalTraces,
 		ExporterFactory:      otlpexporter.NewFactory(),
 		ExporterConfig:       testExporterConfig(addr),
 		ReceiverFactory:      otlpreceiver.NewFactory(),
-		ReceiverConfig:       testReceiverConfig(addr),
+		ReceiverConfig:       testReceiverConfig(t, addr),
 	})
 }
 
@@ -74,9 +91,9 @@ func TestConsumeContractOtlpMetrics(t *testing.T) {
 		T:                    t,
 		NumberOfTestElements: 10,
 		ExporterFactory:      otlpexporter.NewFactory(),
-		DataType:             component.DataTypeMetrics,
+		Signal:               pipeline.SignalMetrics,
 		ExporterConfig:       testExporterConfig(addr),
 		ReceiverFactory:      otlpreceiver.NewFactory(),
-		ReceiverConfig:       testReceiverConfig(addr),
+		ReceiverConfig:       testReceiverConfig(t, addr),
 	})
 }

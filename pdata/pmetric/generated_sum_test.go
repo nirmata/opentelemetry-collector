@@ -21,6 +21,8 @@ func TestSum_MoveTo(t *testing.T) {
 	ms.MoveTo(dest)
 	assert.Equal(t, NewSum(), ms)
 	assert.Equal(t, generateTestSum(), dest)
+	dest.MoveTo(dest)
+	assert.Equal(t, generateTestSum(), dest)
 	sharedState := internal.StateReadOnly
 	assert.Panics(t, func() { ms.MoveTo(newSum(&otlpmetrics.Sum{}, &sharedState)) })
 	assert.Panics(t, func() { newSum(&otlpmetrics.Sum{}, &sharedState).MoveTo(dest) })
@@ -48,9 +50,9 @@ func TestSum_AggregationTemporality(t *testing.T) {
 
 func TestSum_IsMonotonic(t *testing.T) {
 	ms := NewSum()
-	assert.Equal(t, false, ms.IsMonotonic())
+	assert.False(t, ms.IsMonotonic())
 	ms.SetIsMonotonic(true)
-	assert.Equal(t, true, ms.IsMonotonic())
+	assert.True(t, ms.IsMonotonic())
 	sharedState := internal.StateReadOnly
 	assert.Panics(t, func() { newSum(&otlpmetrics.Sum{}, &sharedState).SetIsMonotonic(true) })
 }

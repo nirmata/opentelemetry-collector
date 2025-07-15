@@ -7,22 +7,26 @@ import (
 	"context"
 
 	"go.opentelemetry.io/collector/confmap"
-	"go.opentelemetry.io/collector/confmap/converter/expandconverter"
 	"go.opentelemetry.io/collector/confmap/provider/envprovider"
 	"go.opentelemetry.io/collector/confmap/provider/fileprovider"
 	"go.opentelemetry.io/collector/confmap/provider/httpprovider"
 	"go.opentelemetry.io/collector/confmap/provider/yamlprovider"
+	"go.opentelemetry.io/collector/confmap/xconfmap"
 	"go.opentelemetry.io/collector/otelcol"
 )
 
 // LoadConfig loads a config.Config  from file, and does NOT validate the configuration.
 func LoadConfig(fileName string, factories otelcol.Factories) (*otelcol.Config, error) {
-	// Read yaml config from file
 	provider, err := otelcol.NewConfigProvider(otelcol.ConfigProviderSettings{
 		ResolverSettings: confmap.ResolverSettings{
-			URIs:       []string{fileName},
-			Providers:  makeMapProvidersMap(fileprovider.New(), envprovider.New(), yamlprovider.New(), httpprovider.New()),
-			Converters: []confmap.Converter{expandconverter.New()},
+			URIs: []string{fileName},
+			ProviderFactories: []confmap.ProviderFactory{
+				fileprovider.NewFactory(),
+				envprovider.NewFactory(),
+				yamlprovider.NewFactory(),
+				httpprovider.NewFactory(),
+			},
+			DefaultScheme: "env",
 		},
 	})
 	if err != nil {
@@ -37,13 +41,5 @@ func LoadConfigAndValidate(fileName string, factories otelcol.Factories) (*otelc
 	if err != nil {
 		return nil, err
 	}
-	return cfg, cfg.Validate()
-}
-
-func makeMapProvidersMap(providers ...confmap.Provider) map[string]confmap.Provider {
-	ret := make(map[string]confmap.Provider, len(providers))
-	for _, provider := range providers {
-		ret[provider.Scheme()] = provider
-	}
-	return ret
+	return cfg, xconfmap.Validate(cfg)
 }

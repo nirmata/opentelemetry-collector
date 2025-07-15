@@ -1,26 +1,13 @@
 # General Information
 
-An exporter is how data gets sent to different systems/back-ends. Generally, an
-exporter translates the internal format into another defined format.
+An exporter defines how the pipeline data leaves the collector.
 
-Available trace exporters (sorted alphabetically):
+This repository hosts the following exporters available in 
+traces, metrics and logs pipelines (sorted alphabetically):
 
+- [Debug](debugexporter/README.md)
 - [OTLP gRPC](otlpexporter/README.md)
 - [OTLP HTTP](otlphttpexporter/README.md)
-
-Available metric exporters (sorted alphabetically):
-
-- [OTLP gRPC](otlpexporter/README.md)
-- [OTLP HTTP](otlphttpexporter/README.md)
-
-Available log exporters (sorted alphabetically):
-
-- [OTLP gRPC](otlpexporter/README.md)
-- [OTLP HTTP](otlphttpexporter/README.md)
-
-Available local exporters (sorted alphabetically):
-
-- [Logging](loggingexporter/README.md)
 
 The [contrib
 repository](https://github.com/open-telemetry/opentelemetry-collector-contrib)
@@ -83,7 +70,7 @@ exporters for the same pipeline):
 * exporters with the Capabilities to mutate the data will receive a copy of the data
 
 Exporters access export data when `ConsumeTraces`/`ConsumeMetrics`/`ConsumeLogs`
-function is called. Unless exporter's capabalities include mutation, the exporter MUST NOT modify the `pdata.Traces`/`pdata.Metrics`/`pdata.Logs` argument of
+function is called. Unless exporter's capabilities include mutation, the exporter MUST NOT modify the `pdata.Traces`/`pdata.Metrics`/`pdata.Logs` argument of
 these functions. Any approach that does not mutate the original `pdata.Traces`/`pdata.Metrics`/`pdata.Logs` is allowed without the mutation capability.
 
 ## Proxy Support
