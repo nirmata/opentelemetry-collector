@@ -1,6 +1,8 @@
 module go.opentelemetry.io/collector/processor/batchprocessor
 
-go 1.20
+go 1.23.0
+
+toolchain go1.24.3
 
 require (
 	contrib.go.opencensus.io/exporter/prometheus v0.4.2
@@ -52,9 +54,9 @@ require (
 	github.com/prometheus/statsd_exporter v0.22.7 // indirect
 	go.opentelemetry.io/collector/featuregate v1.0.0 // indirect
 	go.opentelemetry.io/otel/trace v1.21.0 // indirect
-	golang.org/x/net v0.18.0 // indirect
-	golang.org/x/sys v0.15.0 // indirect
-	golang.org/x/text v0.14.0 // indirect
+	golang.org/x/net v0.36.0 // indirect
+	golang.org/x/sys v0.30.0 // indirect
+	golang.org/x/text v0.22.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20230822172742-b8732ec3820d // indirect
 	google.golang.org/grpc v1.59.0 // indirect
 	google.golang.org/protobuf v1.31.0 // indirect
