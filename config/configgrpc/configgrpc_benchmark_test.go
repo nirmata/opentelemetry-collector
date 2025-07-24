@@ -11,50 +11,44 @@ import (
 
 	"github.com/mostynb/go-grpc-compression/nonclobbering/snappy"
 	"github.com/mostynb/go-grpc-compression/nonclobbering/zstd"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/encoding"
 	"google.golang.org/grpc/encoding/gzip"
 	"google.golang.org/grpc/status"
 
-	"go.opentelemetry.io/collector/internal/testdata"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
+	"go.opentelemetry.io/collector/pdata/testdata"
 )
 
 func BenchmarkCompressors(b *testing.B) {
 	payloads := setupTestPayloads()
 
 	compressors := make([]encoding.Compressor, 0)
-	compressors = append(compressors, encoding.GetCompressor(gzip.Name))
-	compressors = append(compressors, encoding.GetCompressor(zstd.Name))
-	compressors = append(compressors, encoding.GetCompressor(snappy.Name))
+	compressors = append(compressors,
+		encoding.GetCompressor(gzip.Name),
+		encoding.GetCompressor(zstd.Name),
+		encoding.GetCompressor(snappy.Name))
 
 	for _, payload := range payloads {
 		for _, compressor := range compressors {
-			fmt.Printf(payload.name)
+			fmt.Println(payload.name)
 			messageBytes, err := payload.marshaler.marshal(payload.message)
-			if err != nil {
-				b.Errorf("marshal(_) returned an error")
-			}
+			require.NoError(b, err, "marshal(_) returned an error")
 
 			compressedBytes, err := compress(compressor, messageBytes)
-			if err != nil {
-				b.Errorf("Compressor.Compress(_) returned an error")
-			}
+			require.NoError(b, err, "Compressor.Compress(_) returned an error")
 
 			name := fmt.Sprintf("%v/raw_bytes_%v/compressed_bytes_%v/compressor_%v", payload.name, len(messageBytes), len(compressedBytes), compressor.Name())
 
 			b.Run(name, func(b *testing.B) {
 				b.ResetTimer()
 				for i := 0; i < b.N; i++ {
-					if err != nil {
-						b.Errorf("marshal(_) returned an error")
-					}
+					require.NoError(b, err, "marshal(_) returned an error")
 					_, err := compress(compressor, messageBytes)
-					if err != nil {
-						b.Errorf("compress(_) returned an error")
-					}
+					require.NoError(b, err, "compress(_) returned an error")
 				}
 			})
 		}
@@ -121,48 +115,60 @@ func setupTestPayloads() []testPayload {
 
 	// log payloads
 	logMarshaler := &logMarshaler{Marshaler: &plog.ProtoMarshaler{}}
-	payloads = append(payloads, testPayload{
-		name:      "sm_log_request",
-		message:   testdata.GenerateLogs(1),
-		marshaler: logMarshaler})
-	payloads = append(payloads, testPayload{
-		name:      "md_log_request",
-		message:   testdata.GenerateLogs(2),
-		marshaler: logMarshaler})
-	payloads = append(payloads, testPayload{
-		name:      "lg_log_request",
-		message:   testdata.GenerateLogs(50),
-		marshaler: logMarshaler})
+	payloads = append(payloads,
+		testPayload{
+			name:      "sm_log_request",
+			message:   testdata.GenerateLogs(1),
+			marshaler: logMarshaler,
+		},
+		testPayload{
+			name:      "md_log_request",
+			message:   testdata.GenerateLogs(2),
+			marshaler: logMarshaler,
+		},
+		testPayload{
+			name:      "lg_log_request",
+			message:   testdata.GenerateLogs(50),
+			marshaler: logMarshaler,
+		})
 
 	// trace payloads
 	tracesMarshaler := &traceMarshaler{Marshaler: &ptrace.ProtoMarshaler{}}
-	payloads = append(payloads, testPayload{
-		name:      "sm_trace_request",
-		message:   testdata.GenerateTraces(1),
-		marshaler: tracesMarshaler})
-	payloads = append(payloads, testPayload{
-		name:      "md_trace_request",
-		message:   testdata.GenerateTraces(2),
-		marshaler: tracesMarshaler})
-	payloads = append(payloads, testPayload{
-		name:      "lg_trace_request",
-		message:   testdata.GenerateTraces(50),
-		marshaler: tracesMarshaler})
+	payloads = append(payloads,
+		testPayload{
+			name:      "sm_trace_request",
+			message:   testdata.GenerateTraces(1),
+			marshaler: tracesMarshaler,
+		},
+		testPayload{
+			name:      "md_trace_request",
+			message:   testdata.GenerateTraces(2),
+			marshaler: tracesMarshaler,
+		},
+		testPayload{
+			name:      "lg_trace_request",
+			message:   testdata.GenerateTraces(50),
+			marshaler: tracesMarshaler,
+		})
 
 	// metric payloads
 	metricsMarshaler := &metricsMarshaler{Marshaler: &pmetric.ProtoMarshaler{}}
-	payloads = append(payloads, testPayload{
-		name:      "sm_metric_request",
-		message:   testdata.GenerateMetrics(1),
-		marshaler: metricsMarshaler})
-	payloads = append(payloads, testPayload{
-		name:      "md_metric_request",
-		message:   testdata.GenerateMetrics(2),
-		marshaler: metricsMarshaler})
-	payloads = append(payloads, testPayload{
-		name:      "lg_metric_request",
-		message:   testdata.GenerateMetrics(50),
-		marshaler: metricsMarshaler})
+	payloads = append(payloads,
+		testPayload{
+			name:      "sm_metric_request",
+			message:   testdata.GenerateMetrics(1),
+			marshaler: metricsMarshaler,
+		},
+		testPayload{
+			name:      "md_metric_request",
+			message:   testdata.GenerateMetrics(2),
+			marshaler: metricsMarshaler,
+		},
+		testPayload{
+			name:      "lg_metric_request",
+			message:   testdata.GenerateMetrics(50),
+			marshaler: metricsMarshaler,
+		})
 
 	return payloads
 }

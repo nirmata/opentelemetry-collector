@@ -6,16 +6,20 @@ package extensiontest // import "go.opentelemetry.io/collector/extension/extensi
 import (
 	"context"
 
+	"github.com/google/uuid"
+
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/component/componenttest"
 	"go.opentelemetry.io/collector/extension"
 )
 
-const typeStr = "nop"
+// NopType is the type of the nop extension.
+var NopType = component.MustNewType("nop")
 
-// NewNopCreateSettings returns a new nop settings for extension.Factory Create* functions.
-func NewNopCreateSettings() extension.CreateSettings {
-	return extension.CreateSettings{
+// NewNopSettings returns a new nop settings for extension.Factory Create* functions with the given type.
+func NewNopSettings(typ component.Type) extension.Settings {
+	return extension.Settings{
+		ID:                component.NewIDWithName(typ, uuid.NewString()),
 		TelemetrySettings: componenttest.NewNopTelemetrySettings(),
 		BuildInfo:         component.NewDefaultBuildInfo(),
 	}
@@ -24,11 +28,11 @@ func NewNopCreateSettings() extension.CreateSettings {
 // NewNopFactory returns an extension.Factory that constructs nop extensions.
 func NewNopFactory() extension.Factory {
 	return extension.NewFactory(
-		"nop",
+		NopType,
 		func() component.Config {
 			return &nopConfig{}
 		},
-		func(context.Context, extension.CreateSettings, component.Config) (extension.Extension, error) {
+		func(context.Context, extension.Settings, component.Config) (extension.Extension, error) {
 			return nopInstance, nil
 		},
 		component.StabilityLevelStable)
@@ -38,16 +42,8 @@ type nopConfig struct{}
 
 var nopInstance = &nopExtension{}
 
-// nopExtension stores consumed traces and metrics for testing purposes.
+// nopExtension acts as an extension for testing purposes.
 type nopExtension struct {
 	component.StartFunc
 	component.ShutdownFunc
-}
-
-// NewNopBuilder returns a extension.Builder that constructs nop receivers.
-func NewNopBuilder() *extension.Builder {
-	nopFactory := NewNopFactory()
-	return extension.NewBuilder(
-		map[component.ID]component.Config{component.NewID(typeStr): nopFactory.CreateDefaultConfig()},
-		map[component.Type]extension.Factory{typeStr: nopFactory})
 }

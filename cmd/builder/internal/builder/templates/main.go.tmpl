@@ -7,6 +7,13 @@ import (
 	"log"
 
 	"go.opentelemetry.io/collector/component"
+	"go.opentelemetry.io/collector/confmap"
+	{{- range .ConfmapConverters}}
+	{{.Name}} "{{.Import}}"
+	{{- end}}	
+	{{- range .ConfmapProviders}}
+	{{.Name}} "{{.Import}}"
+	{{- end}}
 	"go.opentelemetry.io/collector/otelcol"
 )
 
@@ -17,7 +24,41 @@ func main() {
 		Version:     "{{ .Distribution.Version }}",
 	}
 
-	if err := run(otelcol.CollectorSettings{BuildInfo: info, Factories: components}); err != nil {
+	set := otelcol.CollectorSettings{
+		BuildInfo: info,
+		Factories: components,
+		ConfigProviderSettings: otelcol.ConfigProviderSettings{
+			ResolverSettings: confmap.ResolverSettings{
+				ProviderFactories: []confmap.ProviderFactory{
+					{{- range .ConfmapProviders}}
+					{{.Name}}.NewFactory(),
+					{{- end}}
+				},
+				{{- if .ConfmapConverters }}
+				ConverterFactories: []confmap.ConverterFactory{
+					{{- range .ConfmapConverters}}
+					{{.Name}}.NewFactory(),
+					{{- end}}
+				},
+				{{- end }}
+				{{- if .ConfResolver.DefaultURIScheme }}
+				DefaultScheme: "{{ .ConfResolver.DefaultURIScheme }}",
+				{{- end }}
+			},
+		},
+		ProviderModules: map[string]string{
+			{{- range .ConfmapProviders}}
+			{{.Name}}.NewFactory().Create(confmap.ProviderSettings{}).Scheme(): "{{.GoMod}}",
+			{{- end}}
+    	},
+		ConverterModules: []string{
+			{{- range .ConfmapConverters}}
+			"{{.GoMod}}",
+			{{- end}}
+		},
+	}
+
+	if err := run(set); err != nil {
 		log.Fatal(err)
 	}
 }

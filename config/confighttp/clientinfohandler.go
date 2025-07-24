@@ -11,8 +11,6 @@ import (
 	"go.opentelemetry.io/collector/client"
 )
 
-var _ http.Handler = (*clientInfoHandler)(nil)
-
 // clientInfoHandler is an http.Handler that enhances the incoming request context with client.Info.
 type clientInfoHandler struct {
 	next http.Handler
@@ -40,7 +38,7 @@ func contextWithClient(req *http.Request, includeMetadata bool) context.Context 
 
 	if includeMetadata {
 		md := req.Header.Clone()
-		if len(md.Get(client.MetadataHostName)) == 0 && req.Host != "" {
+		if md.Get(client.MetadataHostName) == "" && req.Host != "" {
 			md.Add(client.MetadataHostName, req.Host)
 		}
 

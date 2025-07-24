@@ -48,7 +48,7 @@ func (ms Logs) unmarshalJsoniter(iter *jsoniter.Iterator) {
 	iter.ReadObjectCB(func(iter *jsoniter.Iterator, f string) bool {
 		switch f {
 		case "resource_logs", "resourceLogs":
-			iter.ReadArrayCB(func(iterator *jsoniter.Iterator) bool {
+			iter.ReadArrayCB(func(*jsoniter.Iterator) bool {
 				ms.ResourceLogs().AppendEmpty().unmarshalJsoniter(iter)
 				return true
 			})
@@ -63,7 +63,7 @@ func (ms ResourceLogs) unmarshalJsoniter(iter *jsoniter.Iterator) {
 	iter.ReadObjectCB(func(iter *jsoniter.Iterator, f string) bool {
 		switch f {
 		case "resource":
-			json.ReadResource(iter, &ms.orig.Resource)
+			internal.UnmarshalJSONIterResource(internal.NewResource(&ms.orig.Resource, ms.state), iter)
 		case "scope_logs", "scopeLogs":
 			iter.ReadArrayCB(func(iter *jsoniter.Iterator) bool {
 				ms.ScopeLogs().AppendEmpty().unmarshalJsoniter(iter)
@@ -82,7 +82,7 @@ func (ms ScopeLogs) unmarshalJsoniter(iter *jsoniter.Iterator) {
 	iter.ReadObjectCB(func(iter *jsoniter.Iterator, f string) bool {
 		switch f {
 		case "scope":
-			json.ReadScope(iter, &ms.orig.Scope)
+			internal.UnmarshalJSONIterInstrumentationScope(internal.NewInstrumentationScope(&ms.orig.Scope, ms.state), iter)
 		case "log_records", "logRecords":
 			iter.ReadArrayCB(func(iter *jsoniter.Iterator) bool {
 				ms.LogRecords().AppendEmpty().unmarshalJsoniter(iter)
@@ -108,13 +108,12 @@ func (ms LogRecord) unmarshalJsoniter(iter *jsoniter.Iterator) {
 			ms.orig.SeverityNumber = otlplogs.SeverityNumber(json.ReadEnumValue(iter, otlplogs.SeverityNumber_value))
 		case "severity_text", "severityText":
 			ms.orig.SeverityText = iter.ReadString()
+		case "event_name", "eventName":
+			ms.orig.EventName = iter.ReadString()
 		case "body":
-			json.ReadValue(iter, &ms.orig.Body)
+			internal.UnmarshalJSONIterValue(internal.NewValue(&ms.orig.Body, ms.state), iter)
 		case "attributes":
-			iter.ReadArrayCB(func(iter *jsoniter.Iterator) bool {
-				ms.orig.Attributes = append(ms.orig.Attributes, json.ReadAttribute(iter))
-				return true
-			})
+			internal.UnmarshalJSONIterMap(internal.NewMap(&ms.orig.Attributes, ms.state), iter)
 		case "droppedAttributesCount", "dropped_attributes_count":
 			ms.orig.DroppedAttributesCount = json.ReadUint32(iter)
 		case "flags":

@@ -1,6 +1,6 @@
 s+go.opentelemetry.io/proto/otlp/+go.opentelemetry.io/collector/pdata/internal/data/protogen/+g
 
-s+package opentelemetry.proto.\(.*\).v1;+package opentelemetry.proto.\1.v1;\
+s+package opentelemetry\.proto\.\(.*\)\.v\(.*\);+package opentelemetry.proto.\1.v\2;\
 \
 import "gogoproto/gogo.proto";+g
 
@@ -46,4 +46,23 @@ s+Buckets \(.*\)tive = \(.*\);+Buckets \1tive = \2\
 s+optional \(.*\) \(.*\) = \(.*\);+ oneof \2_ { \1 \2 = \3;}+g
 
 s+\(.*\)PartialSuccess partial_success = \(.*\);+\1PartialSuccess partial_success = \2\
+  [ (gogoproto.nullable) = false ];+g
+
+#
+# Profiles replacements
+#
+s+opentelemetry.proto.profiles.v1development.Profile \(.*\);+opentelemetry.proto.profiles.v1development.Profile \1\
+  [ (gogoproto.nullable) = false ];+g
+
+s+ProfilesDictionary \(.*\);+ProfilesDictionary \1\
+	[ (gogoproto.nullable) = false ];+g
+
+s+bytes profile_id = \(.*\);+bytes profile_id = \1\
+	[\
+	// Use custom ProfileId data type for this field.\
+	(gogoproto.nullable) = false,\
+	(gogoproto.customtype) = "go.opentelemetry.io/collector/pdata/internal/data.ProfileID"\
+	];+g
+
+s+ValueType period_type \(.*\);+ValueType period_type \1\
   [ (gogoproto.nullable) = false ];+g

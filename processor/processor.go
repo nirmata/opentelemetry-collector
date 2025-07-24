@@ -5,12 +5,11 @@ package processor // import "go.opentelemetry.io/collector/processor"
 
 import (
 	"context"
-	"fmt"
-
-	"go.uber.org/zap"
 
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/consumer"
+	"go.opentelemetry.io/collector/pipeline"
+	"go.opentelemetry.io/collector/processor/internal"
 )
 
 // Traces is a processor that can consume traces.
@@ -31,8 +30,8 @@ type Logs interface {
 	consumer.Logs
 }
 
-// CreateSettings is passed to Create* functions in Factory.
-type CreateSettings struct {
+// Settings is passed to Create* functions in Factory.
+type Settings struct {
 	// ID returns the ID of the component that will be created.
 	ID component.ID
 
@@ -40,46 +39,52 @@ type CreateSettings struct {
 
 	// BuildInfo can be used by components for informational purposes
 	BuildInfo component.BuildInfo
+
+	// prevent unkeyed literal initialization
+	_ struct{}
 }
 
 // Factory is Factory interface for processors.
 //
 // This interface cannot be directly implemented. Implementations must
-// use the NewProcessorFactory to implement it.
+// use the NewFactory to implement it.
 type Factory interface {
 	component.Factory
 
-	// CreateTracesProcessor creates a TracesProcessor based on this config.
-	// If the processor type does not support tracing or if the config is not valid,
-	// an error will be returned instead.
-	CreateTracesProcessor(ctx context.Context, set CreateSettings, cfg component.Config, nextConsumer consumer.Traces) (Traces, error)
+	// CreateTraces creates a Traces processor based on this config.
+	// If the processor type does not support traces,
+	// this function returns the error [pipeline.ErrSignalNotSupported].
+	// Implementers can assume `next` is never nil.
+	CreateTraces(ctx context.Context, set Settings, cfg component.Config, next consumer.Traces) (Traces, error)
 
-	// TracesProcessorStability gets the stability level of the TracesProcessor.
-	TracesProcessorStability() component.StabilityLevel
+	// TracesStability gets the stability level of the Traces processor.
+	TracesStability() component.StabilityLevel
 
-	// CreateMetricsProcessor creates a MetricsProcessor based on this config.
-	// If the processor type does not support metrics or if the config is not valid,
-	// an error will be returned instead.
-	CreateMetricsProcessor(ctx context.Context, set CreateSettings, cfg component.Config, nextConsumer consumer.Metrics) (Metrics, error)
+	// CreateMetrics creates a Metrics processor based on this config.
+	// If the processor type does not support metrics,
+	// this function returns the error [pipeline.ErrSignalNotSupported].
+	// Implementers can assume `next` is never nil.
+	CreateMetrics(ctx context.Context, set Settings, cfg component.Config, next consumer.Metrics) (Metrics, error)
 
-	// MetricsProcessorStability gets the stability level of the MetricsProcessor.
-	MetricsProcessorStability() component.StabilityLevel
+	// MetricsStability gets the stability level of the Metrics processor.
+	MetricsStability() component.StabilityLevel
 
-	// CreateLogsProcessor creates a LogsProcessor based on the config.
-	// If the processor type does not support logs or if the config is not valid,
-	// an error will be returned instead.
-	CreateLogsProcessor(ctx context.Context, set CreateSettings, cfg component.Config, nextConsumer consumer.Logs) (Logs, error)
+	// CreateLogs creates a Logs processor based on the config.
+	// If the processor type does not support logs,
+	// this function returns the error [pipeline.ErrSignalNotSupported].
+	// Implementers can assume `next` is never nil.
+	CreateLogs(ctx context.Context, set Settings, cfg component.Config, next consumer.Logs) (Logs, error)
 
-	// LogsProcessorStability gets the stability level of the LogsProcessor.
-	LogsProcessorStability() component.StabilityLevel
+	// LogsStability gets the stability level of the Logs processor.
+	LogsStability() component.StabilityLevel
 
 	unexportedFactoryFunc()
 }
 
 // FactoryOption apply changes to Options.
 type FactoryOption interface {
-	// applyProcessorFactoryOption applies the option.
-	applyProcessorFactoryOption(o *factory)
+	// applyOption applies the option.
+	applyOption(o *factory)
 }
 
 var _ FactoryOption = (*factoryOptionFunc)(nil)
@@ -87,66 +92,19 @@ var _ FactoryOption = (*factoryOptionFunc)(nil)
 // factoryOptionFunc is a FactoryOption created through a function.
 type factoryOptionFunc func(*factory)
 
-func (f factoryOptionFunc) applyProcessorFactoryOption(o *factory) {
+func (f factoryOptionFunc) applyOption(o *factory) {
 	f(o)
-}
-
-// CreateTracesFunc is the equivalent of Factory.CreateTraces().
-type CreateTracesFunc func(context.Context, CreateSettings, component.Config, consumer.Traces) (Traces, error)
-
-// CreateTracesProcessor implements Factory.CreateTracesProcessor().
-func (f CreateTracesFunc) CreateTracesProcessor(
-	ctx context.Context,
-	set CreateSettings,
-	cfg component.Config,
-	nextConsumer consumer.Traces) (Traces, error) {
-	if f == nil {
-		return nil, component.ErrDataTypeIsNotSupported
-	}
-	return f(ctx, set, cfg, nextConsumer)
-}
-
-// CreateMetricsFunc is the equivalent of Factory.CreateMetrics().
-type CreateMetricsFunc func(context.Context, CreateSettings, component.Config, consumer.Metrics) (Metrics, error)
-
-// CreateMetricsProcessor implements Factory.CreateMetricsProcessor().
-func (f CreateMetricsFunc) CreateMetricsProcessor(
-	ctx context.Context,
-	set CreateSettings,
-	cfg component.Config,
-	nextConsumer consumer.Metrics,
-) (Metrics, error) {
-	if f == nil {
-		return nil, component.ErrDataTypeIsNotSupported
-	}
-	return f(ctx, set, cfg, nextConsumer)
-}
-
-// CreateLogsFunc is the equivalent of Factory.CreateLogs().
-type CreateLogsFunc func(context.Context, CreateSettings, component.Config, consumer.Logs) (Logs, error)
-
-// CreateLogsProcessor implements Factory.CreateLogsProcessor().
-func (f CreateLogsFunc) CreateLogsProcessor(
-	ctx context.Context,
-	set CreateSettings,
-	cfg component.Config,
-	nextConsumer consumer.Logs,
-) (Logs, error) {
-	if f == nil {
-		return nil, component.ErrDataTypeIsNotSupported
-	}
-	return f(ctx, set, cfg, nextConsumer)
 }
 
 type factory struct {
 	cfgType component.Type
 	component.CreateDefaultConfigFunc
-	CreateTracesFunc
-	tracesStabilityLevel component.StabilityLevel
-	CreateMetricsFunc
+	createTracesFunc      CreateTracesFunc
+	tracesStabilityLevel  component.StabilityLevel
+	createMetricsFunc     CreateMetricsFunc
 	metricsStabilityLevel component.StabilityLevel
-	CreateLogsFunc
-	logsStabilityLevel component.StabilityLevel
+	createLogsFunc        CreateLogsFunc
+	logsStabilityLevel    component.StabilityLevel
 }
 
 func (f *factory) Type() component.Type {
@@ -155,23 +113,68 @@ func (f *factory) Type() component.Type {
 
 func (f *factory) unexportedFactoryFunc() {}
 
-func (f factory) TracesProcessorStability() component.StabilityLevel {
+func (f *factory) TracesStability() component.StabilityLevel {
 	return f.tracesStabilityLevel
 }
 
-func (f factory) MetricsProcessorStability() component.StabilityLevel {
+func (f *factory) MetricsStability() component.StabilityLevel {
 	return f.metricsStabilityLevel
 }
 
-func (f factory) LogsProcessorStability() component.StabilityLevel {
+func (f *factory) LogsStability() component.StabilityLevel {
 	return f.logsStabilityLevel
 }
+
+func (f *factory) CreateTraces(ctx context.Context, set Settings, cfg component.Config, next consumer.Traces) (Traces, error) {
+	if f.createTracesFunc == nil {
+		return nil, pipeline.ErrSignalNotSupported
+	}
+
+	if set.ID.Type() != f.Type() {
+		return nil, internal.ErrIDMismatch(set.ID, f.Type())
+	}
+
+	return f.createTracesFunc(ctx, set, cfg, next)
+}
+
+func (f *factory) CreateMetrics(ctx context.Context, set Settings, cfg component.Config, next consumer.Metrics) (Metrics, error) {
+	if f.createMetricsFunc == nil {
+		return nil, pipeline.ErrSignalNotSupported
+	}
+
+	if set.ID.Type() != f.Type() {
+		return nil, internal.ErrIDMismatch(set.ID, f.Type())
+	}
+
+	return f.createMetricsFunc(ctx, set, cfg, next)
+}
+
+func (f *factory) CreateLogs(ctx context.Context, set Settings, cfg component.Config, next consumer.Logs) (Logs, error) {
+	if f.createLogsFunc == nil {
+		return nil, pipeline.ErrSignalNotSupported
+	}
+
+	if set.ID.Type() != f.Type() {
+		return nil, internal.ErrIDMismatch(set.ID, f.Type())
+	}
+
+	return f.createLogsFunc(ctx, set, cfg, next)
+}
+
+// CreateTracesFunc is the equivalent of Factory.CreateTraces().
+type CreateTracesFunc func(context.Context, Settings, component.Config, consumer.Traces) (Traces, error)
+
+// CreateMetricsFunc is the equivalent of Factory.CreateMetrics().
+type CreateMetricsFunc func(context.Context, Settings, component.Config, consumer.Metrics) (Metrics, error)
+
+// CreateLogsFunc is the equivalent of Factory.CreateLogs.
+type CreateLogsFunc func(context.Context, Settings, component.Config, consumer.Logs) (Logs, error)
 
 // WithTraces overrides the default "error not supported" implementation for CreateTraces and the default "undefined" stability level.
 func WithTraces(createTraces CreateTracesFunc, sl component.StabilityLevel) FactoryOption {
 	return factoryOptionFunc(func(o *factory) {
 		o.tracesStabilityLevel = sl
-		o.CreateTracesFunc = createTraces
+		o.createTracesFunc = createTraces
 	})
 }
 
@@ -179,7 +182,7 @@ func WithTraces(createTraces CreateTracesFunc, sl component.StabilityLevel) Fact
 func WithMetrics(createMetrics CreateMetricsFunc, sl component.StabilityLevel) FactoryOption {
 	return factoryOptionFunc(func(o *factory) {
 		o.metricsStabilityLevel = sl
-		o.CreateMetricsFunc = createMetrics
+		o.createMetricsFunc = createMetrics
 	})
 }
 
@@ -187,7 +190,7 @@ func WithMetrics(createMetrics CreateMetricsFunc, sl component.StabilityLevel) F
 func WithLogs(createLogs CreateLogsFunc, sl component.StabilityLevel) FactoryOption {
 	return factoryOptionFunc(func(o *factory) {
 		o.logsStabilityLevel = sl
-		o.CreateLogsFunc = createLogs
+		o.createLogsFunc = createLogs
 	})
 }
 
@@ -198,94 +201,7 @@ func NewFactory(cfgType component.Type, createDefaultConfig component.CreateDefa
 		CreateDefaultConfigFunc: createDefaultConfig,
 	}
 	for _, opt := range options {
-		opt.applyProcessorFactoryOption(f)
+		opt.applyOption(f)
 	}
 	return f
-}
-
-// MakeFactoryMap takes a list of factories and returns a map with Factory type as keys.
-// It returns a non-nil error when there are factories with duplicate type.
-func MakeFactoryMap(factories ...Factory) (map[component.Type]Factory, error) {
-	fMap := map[component.Type]Factory{}
-	for _, f := range factories {
-		if _, ok := fMap[f.Type()]; ok {
-			return fMap, fmt.Errorf("duplicate processor factory %q", f.Type())
-		}
-		fMap[f.Type()] = f
-	}
-	return fMap, nil
-}
-
-// Builder processor is a helper struct that given a set of Configs and Factories helps with creating processors.
-type Builder struct {
-	cfgs      map[component.ID]component.Config
-	factories map[component.Type]Factory
-}
-
-// NewBuilder creates a new processor.Builder to help with creating components form a set of configs and factories.
-func NewBuilder(cfgs map[component.ID]component.Config, factories map[component.Type]Factory) *Builder {
-	return &Builder{cfgs: cfgs, factories: factories}
-}
-
-// CreateTraces creates a Traces processor based on the settings and config.
-func (b *Builder) CreateTraces(ctx context.Context, set CreateSettings, next consumer.Traces) (Traces, error) {
-	cfg, existsCfg := b.cfgs[set.ID]
-	if !existsCfg {
-		return nil, fmt.Errorf("processor %q is not configured", set.ID)
-	}
-
-	f, existsFactory := b.factories[set.ID.Type()]
-	if !existsFactory {
-		return nil, fmt.Errorf("processor factory not available for: %q", set.ID)
-	}
-
-	logStabilityLevel(set.Logger, f.TracesProcessorStability())
-	return f.CreateTracesProcessor(ctx, set, cfg, next)
-}
-
-// CreateMetrics creates a Metrics processor based on the settings and config.
-func (b *Builder) CreateMetrics(ctx context.Context, set CreateSettings, next consumer.Metrics) (Metrics, error) {
-	cfg, existsCfg := b.cfgs[set.ID]
-	if !existsCfg {
-		return nil, fmt.Errorf("processor %q is not configured", set.ID)
-	}
-
-	f, existsFactory := b.factories[set.ID.Type()]
-	if !existsFactory {
-		return nil, fmt.Errorf("processor factory not available for: %q", set.ID)
-	}
-
-	logStabilityLevel(set.Logger, f.MetricsProcessorStability())
-	return f.CreateMetricsProcessor(ctx, set, cfg, next)
-}
-
-// CreateLogs creates a Logs processor based on the settings and config.
-func (b *Builder) CreateLogs(ctx context.Context, set CreateSettings, next consumer.Logs) (Logs, error) {
-	cfg, existsCfg := b.cfgs[set.ID]
-	if !existsCfg {
-		return nil, fmt.Errorf("processor %q is not configured", set.ID)
-	}
-
-	f, existsFactory := b.factories[set.ID.Type()]
-	if !existsFactory {
-		return nil, fmt.Errorf("processor factory not available for: %q", set.ID)
-	}
-
-	logStabilityLevel(set.Logger, f.LogsProcessorStability())
-	return f.CreateLogsProcessor(ctx, set, cfg, next)
-}
-
-func (b *Builder) Factory(componentType component.Type) component.Factory {
-	return b.factories[componentType]
-}
-
-// logStabilityLevel logs the stability level of a component. The log level is set to info for
-// undefined, unmaintained, deprecated and development. The log level is set to debug
-// for alpha, beta and stable.
-func logStabilityLevel(logger *zap.Logger, sl component.StabilityLevel) {
-	if sl >= component.StabilityLevelAlpha {
-		logger.Debug(sl.LogMessage())
-	} else {
-		logger.Info(sl.LogMessage())
-	}
 }

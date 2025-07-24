@@ -12,21 +12,41 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"go.opentelemetry.io/collector/component"
+	"go.opentelemetry.io/collector/config/configauth"
 	"go.opentelemetry.io/collector/config/configgrpc"
 	"go.opentelemetry.io/collector/config/confighttp"
 	"go.opentelemetry.io/collector/config/confignet"
+	"go.opentelemetry.io/collector/config/configopaque"
+	"go.opentelemetry.io/collector/config/configoptional"
 	"go.opentelemetry.io/collector/config/configtls"
 	"go.opentelemetry.io/collector/confmap"
 	"go.opentelemetry.io/collector/confmap/confmaptest"
+	"go.opentelemetry.io/collector/confmap/xconfmap"
 )
+
+// GetOrInsertDefault is a helper function to get or insert a default value for a configoptional.Optional type.
+func GetOrInsertDefault[T any](t *testing.T, opt *configoptional.Optional[T]) *T {
+	if opt.HasValue() {
+		return opt.Get()
+	}
+
+	empty := confmap.NewFromStringMap(map[string]any{})
+	require.NoError(t, empty.Unmarshal(opt))
+	val := opt.Get()
+	require.NotNil(t, "Expected a default value to be set for %T", val)
+	return val
+}
 
 func TestUnmarshalDefaultConfig(t *testing.T) {
 	cm, err := confmaptest.LoadConf(filepath.Join("testdata", "default.yaml"))
 	require.NoError(t, err)
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig()
-	assert.NoError(t, component.UnmarshalConfig(cm, cfg))
-	assert.Equal(t, factory.CreateDefaultConfig(), cfg)
+	require.NoError(t, cm.Unmarshal(&cfg))
+	expectedCfg := factory.CreateDefaultConfig().(*Config)
+	GetOrInsertDefault(t, &expectedCfg.GRPC)
+	GetOrInsertDefault(t, &expectedCfg.HTTP)
+	assert.Equal(t, expectedCfg, cfg)
 }
 
 func TestUnmarshalConfigOnlyGRPC(t *testing.T) {
@@ -34,10 +54,10 @@ func TestUnmarshalConfigOnlyGRPC(t *testing.T) {
 	require.NoError(t, err)
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig()
-	assert.NoError(t, component.UnmarshalConfig(cm, cfg))
+	require.NoError(t, cm.Unmarshal(&cfg))
 
 	defaultOnlyGRPC := factory.CreateDefaultConfig().(*Config)
-	defaultOnlyGRPC.HTTP = nil
+	GetOrInsertDefault(t, &defaultOnlyGRPC.GRPC)
 	assert.Equal(t, defaultOnlyGRPC, cfg)
 }
 
@@ -46,10 +66,10 @@ func TestUnmarshalConfigOnlyHTTP(t *testing.T) {
 	require.NoError(t, err)
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig()
-	assert.NoError(t, component.UnmarshalConfig(cm, cfg))
+	require.NoError(t, cm.Unmarshal(&cfg))
 
 	defaultOnlyHTTP := factory.CreateDefaultConfig().(*Config)
-	defaultOnlyHTTP.GRPC = nil
+	GetOrInsertDefault(t, &defaultOnlyHTTP.HTTP)
 	assert.Equal(t, defaultOnlyHTTP, cfg)
 }
 
@@ -58,10 +78,10 @@ func TestUnmarshalConfigOnlyHTTPNull(t *testing.T) {
 	require.NoError(t, err)
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig()
-	assert.NoError(t, component.UnmarshalConfig(cm, cfg))
+	require.NoError(t, cm.Unmarshal(&cfg))
 
 	defaultOnlyHTTP := factory.CreateDefaultConfig().(*Config)
-	defaultOnlyHTTP.GRPC = nil
+	GetOrInsertDefault(t, &defaultOnlyHTTP.HTTP)
 	assert.Equal(t, defaultOnlyHTTP, cfg)
 }
 
@@ -70,10 +90,10 @@ func TestUnmarshalConfigOnlyHTTPEmptyMap(t *testing.T) {
 	require.NoError(t, err)
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig()
-	assert.NoError(t, component.UnmarshalConfig(cm, cfg))
+	require.NoError(t, cm.Unmarshal(&cfg))
 
 	defaultOnlyHTTP := factory.CreateDefaultConfig().(*Config)
-	defaultOnlyHTTP.GRPC = nil
+	GetOrInsertDefault(t, &defaultOnlyHTTP.HTTP)
 	assert.Equal(t, defaultOnlyHTTP, cfg)
 }
 
@@ -82,60 +102,65 @@ func TestUnmarshalConfig(t *testing.T) {
 	require.NoError(t, err)
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig()
-	assert.NoError(t, component.UnmarshalConfig(cm, cfg))
+	require.NoError(t, cm.Unmarshal(&cfg))
 	assert.Equal(t,
 		&Config{
 			Protocols: Protocols{
-				GRPC: &configgrpc.GRPCServerSettings{
-					NetAddr: confignet.NetAddr{
-						Endpoint:  "0.0.0.0:4317",
-						Transport: "tcp",
+				GRPC: configoptional.Some(configgrpc.ServerConfig{
+					NetAddr: confignet.AddrConfig{
+						Endpoint:  "localhost:4317",
+						Transport: confignet.TransportTypeTCP,
 					},
-					TLSSetting: &configtls.TLSServerSetting{
-						TLSSetting: configtls.TLSSetting{
+					TLS: configoptional.Some(configtls.ServerConfig{
+						Config: configtls.Config{
 							CertFile: "test.crt",
 							KeyFile:  "test.key",
 						},
-					},
+					}),
 					MaxRecvMsgSizeMiB:    32,
 					MaxConcurrentStreams: 16,
 					ReadBufferSize:       1024,
 					WriteBufferSize:      1024,
-					Keepalive: &configgrpc.KeepaliveServerConfig{
-						ServerParameters: &configgrpc.KeepaliveServerParameters{
+					Keepalive: configoptional.Some(configgrpc.KeepaliveServerConfig{
+						ServerParameters: configoptional.Some(configgrpc.KeepaliveServerParameters{
 							MaxConnectionIdle:     11 * time.Second,
 							MaxConnectionAge:      12 * time.Second,
 							MaxConnectionAgeGrace: 13 * time.Second,
 							Time:                  30 * time.Second,
 							Timeout:               5 * time.Second,
-						},
-						EnforcementPolicy: &configgrpc.KeepaliveEnforcementPolicy{
+						}),
+						EnforcementPolicy: configoptional.Some(configgrpc.KeepaliveEnforcementPolicy{
 							MinTime:             10 * time.Second,
 							PermitWithoutStream: true,
-						},
-					},
-				},
-				HTTP: &HTTPConfig{
-					HTTPServerSettings: &confighttp.HTTPServerSettings{
-						Endpoint: "0.0.0.0:4318",
-						TLSSetting: &configtls.TLSServerSetting{
-							TLSSetting: configtls.TLSSetting{
+						}),
+					}),
+				}),
+				HTTP: configoptional.Some(HTTPConfig{
+					ServerConfig: confighttp.ServerConfig{
+						Auth: configoptional.Some(confighttp.AuthConfig{
+							Config: configauth.Config{
+								AuthenticatorID: component.MustNewID("test"),
+							},
+						}),
+						Endpoint: "localhost:4318",
+						TLS: configoptional.Some(configtls.ServerConfig{
+							Config: configtls.Config{
 								CertFile: "test.crt",
 								KeyFile:  "test.key",
 							},
-						},
-						CORS: &confighttp.CORSSettings{
+						}),
+						CORS: configoptional.Some(confighttp.CORSConfig{
 							AllowedOrigins: []string{"https://*.test.com", "https://test.com"},
 							MaxAge:         7200,
-						},
+						}),
+						ResponseHeaders: map[string]configopaque.String{},
 					},
 					TracesURLPath:  "/traces",
 					MetricsURLPath: "/v2/metrics",
 					LogsURLPath:    "/log/ingest",
-				},
+				}),
 			},
 		}, cfg)
-
 }
 
 func TestUnmarshalConfigUnix(t *testing.T) {
@@ -143,35 +168,38 @@ func TestUnmarshalConfigUnix(t *testing.T) {
 	require.NoError(t, err)
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig()
-	assert.NoError(t, component.UnmarshalConfig(cm, cfg))
+	require.NoError(t, cm.Unmarshal(&cfg))
 	assert.Equal(t,
 		&Config{
 			Protocols: Protocols{
-				GRPC: &configgrpc.GRPCServerSettings{
-					NetAddr: confignet.NetAddr{
+				GRPC: configoptional.Some(configgrpc.ServerConfig{
+					NetAddr: confignet.AddrConfig{
 						Endpoint:  "/tmp/grpc_otlp.sock",
-						Transport: "unix",
+						Transport: confignet.TransportTypeUnix,
 					},
 					ReadBufferSize: 512 * 1024,
-				},
-				HTTP: &HTTPConfig{
-					HTTPServerSettings: &confighttp.HTTPServerSettings{
-						Endpoint: "/tmp/http_otlp.sock",
+					Keepalive:      configoptional.Some(configgrpc.NewDefaultKeepaliveServerConfig()),
+				}),
+				HTTP: configoptional.Some(HTTPConfig{
+					ServerConfig: confighttp.ServerConfig{
+						Endpoint:        "/tmp/http_otlp.sock",
+						ResponseHeaders: map[string]configopaque.String{},
 					},
 					TracesURLPath:  defaultTracesURLPath,
 					MetricsURLPath: defaultMetricsURLPath,
 					LogsURLPath:    defaultLogsURLPath,
-				},
+				}),
 			},
 		}, cfg)
 }
 
+// cspell:ignore htttp
 func TestUnmarshalConfigTypoDefaultProtocol(t *testing.T) {
 	cm, err := confmaptest.LoadConf(filepath.Join("testdata", "typo_default_proto_config.yaml"))
 	require.NoError(t, err)
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig()
-	assert.EqualError(t, component.UnmarshalConfig(cm, cfg), "1 error(s) decoding:\n\n* 'protocols' has invalid keys: htttp")
+	assert.ErrorContains(t, cm.Unmarshal(&cfg), "'protocols' has invalid keys: htttp")
 }
 
 func TestUnmarshalConfigInvalidProtocol(t *testing.T) {
@@ -179,7 +207,7 @@ func TestUnmarshalConfigInvalidProtocol(t *testing.T) {
 	require.NoError(t, err)
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig()
-	assert.EqualError(t, component.UnmarshalConfig(cm, cfg), "1 error(s) decoding:\n\n* 'protocols' has invalid keys: thrift")
+	assert.ErrorContains(t, cm.Unmarshal(&cfg), "'protocols' has invalid keys: thrift")
 }
 
 func TestUnmarshalConfigEmptyProtocols(t *testing.T) {
@@ -187,8 +215,8 @@ func TestUnmarshalConfigEmptyProtocols(t *testing.T) {
 	require.NoError(t, err)
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig()
-	assert.NoError(t, component.UnmarshalConfig(cm, cfg))
-	assert.EqualError(t, component.ValidateConfig(cfg), "must specify at least one protocol when using the OTLP receiver")
+	require.NoError(t, cm.Unmarshal(&cfg))
+	assert.EqualError(t, xconfmap.Validate(cfg), "must specify at least one protocol when using the OTLP receiver")
 }
 
 func TestUnmarshalConfigInvalidSignalPath(t *testing.T) {
@@ -210,13 +238,13 @@ func TestUnmarshalConfigInvalidSignalPath(t *testing.T) {
 		},
 	}
 
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			cm, err := confmaptest.LoadConf(filepath.Join("testdata", test.testDataFn))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cm, err := confmaptest.LoadConf(filepath.Join("testdata", tt.testDataFn))
 			require.NoError(t, err)
 			factory := NewFactory()
 			cfg := factory.CreateDefaultConfig()
-			assert.EqualError(t, component.UnmarshalConfig(cm, cfg), "invalid HTTP URL path set for signal: parse \":invalid\": missing protocol scheme")
+			assert.ErrorContains(t, cm.Unmarshal(&cfg), "invalid HTTP URL path set for signal: parse \":invalid\": missing protocol scheme")
 		})
 	}
 }
@@ -224,6 +252,6 @@ func TestUnmarshalConfigInvalidSignalPath(t *testing.T) {
 func TestUnmarshalConfigEmpty(t *testing.T) {
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig()
-	assert.NoError(t, component.UnmarshalConfig(confmap.New(), cfg))
-	assert.EqualError(t, component.ValidateConfig(cfg), "must specify at least one protocol when using the OTLP receiver")
+	require.NoError(t, confmap.New().Unmarshal(&cfg))
+	assert.EqualError(t, xconfmap.Validate(cfg), "must specify at least one protocol when using the OTLP receiver")
 }

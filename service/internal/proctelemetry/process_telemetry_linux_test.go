@@ -2,52 +2,41 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //go:build linux
-// +build linux
 
 package proctelemetry
 
 import (
 	"testing"
-	"time"
 
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.opencensus.io/metric"
-	"go.opentelemetry.io/otel/metric/noop"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata/metricdatatest"
+
+	"go.opentelemetry.io/collector/component/componenttest"
+	"go.opentelemetry.io/collector/service/internal/metadatatest"
 )
 
-func TestOCProcessTelemetryWithHostProc(t *testing.T) {
-	ocRegistry := metric.NewRegistry()
+func TestProcessTelemetryWithHostProc(t *testing.T) {
 	// Make the sure the environment variable value is not used.
 	t.Setenv("HOST_PROC", "foo/bar")
+	tel := componenttest.NewTelemetry()
+	require.NoError(t, RegisterProcessMetrics(tel.NewTelemetrySettings(), WithHostProc("/proc")))
 
-	require.NoError(t, RegisterProcessMetrics(ocRegistry, noop.NewMeterProvider(), false, 0, WithHostProc("/proc")))
+	metadatatest.AssertEqualProcessUptime(t, tel,
+		[]metricdata.DataPoint[float64]{{}}, metricdatatest.IgnoreTimestamp(), metricdatatest.IgnoreValue())
 
-	// Check that the metrics are actually filled.
-	time.Sleep(200 * time.Millisecond)
+	metadatatest.AssertEqualProcessRuntimeHeapAllocBytes(t, tel,
+		[]metricdata.DataPoint[int64]{{}}, metricdatatest.IgnoreTimestamp(), metricdatatest.IgnoreValue())
 
-	metrics := ocRegistry.Read()
+	metadatatest.AssertEqualProcessRuntimeTotalAllocBytes(t, tel,
+		[]metricdata.DataPoint[int64]{{}}, metricdatatest.IgnoreTimestamp(), metricdatatest.IgnoreValue())
 
-	for _, metricName := range expectedMetrics {
-		m := findMetric(metrics, metricName)
-		require.NotNil(t, m)
-		require.Len(t, m.TimeSeries, 1)
-		ts := m.TimeSeries[0]
-		assert.Len(t, ts.LabelValues, 0)
-		require.Len(t, ts.Points, 1)
+	metadatatest.AssertEqualProcessRuntimeTotalSysMemoryBytes(t, tel,
+		[]metricdata.DataPoint[int64]{{}}, metricdatatest.IgnoreTimestamp(), metricdatatest.IgnoreValue())
 
-		var value float64
-		if metricName == "process/uptime" || metricName == "process/cpu_seconds" {
-			value = ts.Points[0].Value.(float64)
-		} else {
-			value = float64(ts.Points[0].Value.(int64))
-		}
+	metadatatest.AssertEqualProcessCPUSeconds(t, tel,
+		[]metricdata.DataPoint[float64]{{}}, metricdatatest.IgnoreTimestamp(), metricdatatest.IgnoreValue())
 
-		if metricName == "process/uptime" || metricName == "process/cpu_seconds" {
-			// This likely will still be zero when running the test.
-			assert.GreaterOrEqual(t, value, float64(0), metricName)
-			continue
-		}
-		assert.Greater(t, value, float64(0), metricName)
-	}
+	metadatatest.AssertEqualProcessMemoryRss(t, tel,
+		[]metricdata.DataPoint[int64]{{}}, metricdatatest.IgnoreTimestamp(), metricdatatest.IgnoreValue())
 }

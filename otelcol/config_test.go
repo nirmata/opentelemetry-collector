@@ -8,11 +8,15 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	config "go.opentelemetry.io/contrib/otelconf/v0.3.0"
 	"go.uber.org/zap/zapcore"
 
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/configtelemetry"
+	"go.opentelemetry.io/collector/confmap/xconfmap"
+	"go.opentelemetry.io/collector/featuregate"
+	"go.opentelemetry.io/collector/pipeline"
 	"go.opentelemetry.io/collector/service"
 	"go.opentelemetry.io/collector/service/pipelines"
 	"go.opentelemetry.io/collector/service/telemetry"
@@ -35,7 +39,7 @@ func (c *errConfig) Validate() error {
 }
 
 func TestConfigValidate(t *testing.T) {
-	var testCases = []struct {
+	testCases := []struct {
 		name     string // test case name (also file name containing config yaml)
 		cfgFn    func() *Config
 		expected error
@@ -53,6 +57,19 @@ func TestConfigValidate(t *testing.T) {
 				return cfg
 			},
 			expected: nil,
+		},
+		{
+			name: "empty configuration file",
+			cfgFn: func() *Config {
+				cfg := generateConfig()
+				cfg.Receivers = nil
+				cfg.Connectors = nil
+				cfg.Processors = nil
+				cfg.Exporters = nil
+				cfg.Extensions = nil
+				return cfg
+			},
+			expected: errEmptyConfigurationFile,
 		},
 		{
 			name: "missing-exporters",
@@ -76,7 +93,7 @@ func TestConfigValidate(t *testing.T) {
 			name: "invalid-extension-reference",
 			cfgFn: func() *Config {
 				cfg := generateConfig()
-				cfg.Service.Extensions = append(cfg.Service.Extensions, component.NewIDWithName("nop", "2"))
+				cfg.Service.Extensions = append(cfg.Service.Extensions, component.MustNewIDWithName("nop", "2"))
 				return cfg
 			},
 			expected: errors.New(`service::extensions: references extension "nop/2" which is not configured`),
@@ -85,8 +102,8 @@ func TestConfigValidate(t *testing.T) {
 			name: "invalid-receiver-reference",
 			cfgFn: func() *Config {
 				cfg := generateConfig()
-				pipe := cfg.Service.Pipelines[component.NewID("traces")]
-				pipe.Receivers = append(pipe.Receivers, component.NewIDWithName("nop", "2"))
+				pipe := cfg.Service.Pipelines[pipeline.NewID(pipeline.SignalTraces)]
+				pipe.Receivers = append(pipe.Receivers, component.MustNewIDWithName("nop", "2"))
 				return cfg
 			},
 			expected: errors.New(`service::pipelines::traces: references receiver "nop/2" which is not configured`),
@@ -95,8 +112,8 @@ func TestConfigValidate(t *testing.T) {
 			name: "invalid-processor-reference",
 			cfgFn: func() *Config {
 				cfg := generateConfig()
-				pipe := cfg.Service.Pipelines[component.NewID("traces")]
-				pipe.Processors = append(pipe.Processors, component.NewIDWithName("nop", "2"))
+				pipe := cfg.Service.Pipelines[pipeline.NewID(pipeline.SignalTraces)]
+				pipe.Processors = append(pipe.Processors, component.MustNewIDWithName("nop", "2"))
 				return cfg
 			},
 			expected: errors.New(`service::pipelines::traces: references processor "nop/2" which is not configured`),
@@ -105,8 +122,8 @@ func TestConfigValidate(t *testing.T) {
 			name: "invalid-exporter-reference",
 			cfgFn: func() *Config {
 				cfg := generateConfig()
-				pipe := cfg.Service.Pipelines[component.NewID("traces")]
-				pipe.Exporters = append(pipe.Exporters, component.NewIDWithName("nop", "2"))
+				pipe := cfg.Service.Pipelines[pipeline.NewID(pipeline.SignalTraces)]
+				pipe.Exporters = append(pipe.Exporters, component.MustNewIDWithName("nop", "2"))
 				return cfg
 			},
 			expected: errors.New(`service::pipelines::traces: references exporter "nop/2" which is not configured`),
@@ -115,7 +132,7 @@ func TestConfigValidate(t *testing.T) {
 			name: "invalid-receiver-config",
 			cfgFn: func() *Config {
 				cfg := generateConfig()
-				cfg.Receivers[component.NewID("nop")] = &errConfig{
+				cfg.Receivers[component.MustNewID("nop")] = &errConfig{
 					validateErr: errInvalidRecvConfig,
 				}
 				return cfg
@@ -126,7 +143,7 @@ func TestConfigValidate(t *testing.T) {
 			name: "invalid-exporter-config",
 			cfgFn: func() *Config {
 				cfg := generateConfig()
-				cfg.Exporters[component.NewID("nop")] = &errConfig{
+				cfg.Exporters[component.MustNewID("nop")] = &errConfig{
 					validateErr: errInvalidExpConfig,
 				}
 				return cfg
@@ -137,7 +154,7 @@ func TestConfigValidate(t *testing.T) {
 			name: "invalid-processor-config",
 			cfgFn: func() *Config {
 				cfg := generateConfig()
-				cfg.Processors[component.NewID("nop")] = &errConfig{
+				cfg.Processors[component.MustNewID("nop")] = &errConfig{
 					validateErr: errInvalidProcConfig,
 				}
 				return cfg
@@ -148,7 +165,7 @@ func TestConfigValidate(t *testing.T) {
 			name: "invalid-extension-config",
 			cfgFn: func() *Config {
 				cfg := generateConfig()
-				cfg.Extensions[component.NewID("nop")] = &errConfig{
+				cfg.Extensions[component.MustNewID("nop")] = &errConfig{
 					validateErr: errInvalidExtConfig,
 				}
 				return cfg
@@ -159,7 +176,7 @@ func TestConfigValidate(t *testing.T) {
 			name: "invalid-connector-config",
 			cfgFn: func() *Config {
 				cfg := generateConfig()
-				cfg.Connectors[component.NewIDWithName("nop", "conn")] = &errConfig{
+				cfg.Connectors[component.MustNewIDWithName("nop", "conn")] = &errConfig{
 					validateErr: errInvalidConnConfig,
 				}
 				return cfg
@@ -170,34 +187,34 @@ func TestConfigValidate(t *testing.T) {
 			name: "ambiguous-connector-name-as-receiver",
 			cfgFn: func() *Config {
 				cfg := generateConfig()
-				cfg.Receivers[component.NewID("nop/2")] = &errConfig{}
-				cfg.Connectors[component.NewID("nop/2")] = &errConfig{}
-				pipe := cfg.Service.Pipelines[component.NewID("traces")]
-				pipe.Receivers = append(pipe.Receivers, component.NewIDWithName("nop", "2"))
-				pipe.Exporters = append(pipe.Exporters, component.NewIDWithName("nop", "2"))
+				cfg.Receivers[component.MustNewID("nop2")] = &errConfig{}
+				cfg.Connectors[component.MustNewID("nop2")] = &errConfig{}
+				pipe := cfg.Service.Pipelines[pipeline.NewID(pipeline.SignalTraces)]
+				pipe.Receivers = append(pipe.Receivers, component.MustNewIDWithName("nop", "2"))
+				pipe.Exporters = append(pipe.Exporters, component.MustNewIDWithName("nop", "2"))
 				return cfg
 			},
-			expected: errors.New(`connectors::nop/2: ambiguous ID: Found both "nop/2" receiver and "nop/2" connector. Change one of the components' IDs to eliminate ambiguity (e.g. rename "nop/2" connector to "nop/2/connector")`),
+			expected: errors.New(`connectors::nop2: ambiguous ID: Found both "nop2" receiver and "nop2" connector. Change one of the components' IDs to eliminate ambiguity (e.g. rename "nop2" connector to "nop2/connector")`),
 		},
 		{
 			name: "ambiguous-connector-name-as-exporter",
 			cfgFn: func() *Config {
 				cfg := generateConfig()
-				cfg.Exporters[component.NewID("nop/2")] = &errConfig{}
-				cfg.Connectors[component.NewID("nop/2")] = &errConfig{}
-				pipe := cfg.Service.Pipelines[component.NewID("traces")]
-				pipe.Receivers = append(pipe.Receivers, component.NewIDWithName("nop", "2"))
-				pipe.Exporters = append(pipe.Exporters, component.NewIDWithName("nop", "2"))
+				cfg.Exporters[component.MustNewID("nop2")] = &errConfig{}
+				cfg.Connectors[component.MustNewID("nop2")] = &errConfig{}
+				pipe := cfg.Service.Pipelines[pipeline.NewID(pipeline.SignalTraces)]
+				pipe.Receivers = append(pipe.Receivers, component.MustNewIDWithName("nop", "2"))
+				pipe.Exporters = append(pipe.Exporters, component.MustNewIDWithName("nop", "2"))
 				return cfg
 			},
-			expected: errors.New(`connectors::nop/2: ambiguous ID: Found both "nop/2" exporter and "nop/2" connector. Change one of the components' IDs to eliminate ambiguity (e.g. rename "nop/2" connector to "nop/2/connector")`),
+			expected: errors.New(`connectors::nop2: ambiguous ID: Found both "nop2" exporter and "nop2" connector. Change one of the components' IDs to eliminate ambiguity (e.g. rename "nop2" connector to "nop2/connector")`),
 		},
 		{
 			name: "invalid-connector-reference-as-receiver",
 			cfgFn: func() *Config {
 				cfg := generateConfig()
-				pipe := cfg.Service.Pipelines[component.NewID("traces")]
-				pipe.Receivers = append(pipe.Receivers, component.NewIDWithName("nop", "conn2"))
+				pipe := cfg.Service.Pipelines[pipeline.NewID(pipeline.SignalTraces)]
+				pipe.Receivers = append(pipe.Receivers, component.MustNewIDWithName("nop", "conn2"))
 				return cfg
 			},
 			expected: errors.New(`service::pipelines::traces: references receiver "nop/conn2" which is not configured`),
@@ -206,8 +223,8 @@ func TestConfigValidate(t *testing.T) {
 			name: "invalid-connector-reference-as-receiver",
 			cfgFn: func() *Config {
 				cfg := generateConfig()
-				pipe := cfg.Service.Pipelines[component.NewID("traces")]
-				pipe.Exporters = append(pipe.Exporters, component.NewIDWithName("nop", "conn2"))
+				pipe := cfg.Service.Pipelines[pipeline.NewID(pipeline.SignalTraces)]
+				pipe.Exporters = append(pipe.Exporters, component.MustNewIDWithName("nop", "conn2"))
 				return cfg
 			},
 			expected: errors.New(`service::pipelines::traces: references exporter "nop/conn2" which is not configured`),
@@ -219,34 +236,56 @@ func TestConfigValidate(t *testing.T) {
 				cfg.Service.Pipelines = nil
 				return cfg
 			},
-			expected: fmt.Errorf(`service::pipelines config validation failed: %w`, errors.New(`service must have at least one pipeline`)),
+			expected: fmt.Errorf(`service::pipelines: %w`, errors.New(`service must have at least one pipeline`)),
 		},
 	}
 
-	for _, test := range testCases {
-		t.Run(test.name, func(t *testing.T) {
-			cfg := test.cfgFn()
-			assert.Equal(t, test.expected, cfg.Validate())
+	for _, tt := range testCases {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := tt.cfgFn()
+			err := xconfmap.Validate(cfg)
+			if tt.expected != nil {
+				require.EqualError(t, err, tt.expected.Error())
+			} else {
+				require.NoError(t, err)
+			}
 		})
 	}
+}
+
+func TestNoPipelinesFeatureGate(t *testing.T) {
+	cfg := generateConfig()
+	cfg.Receivers = nil
+	cfg.Exporters = nil
+	cfg.Service.Pipelines = pipelines.Config{}
+
+	require.Error(t, xconfmap.Validate(cfg))
+
+	gate := pipelines.AllowNoPipelines
+	require.NoError(t, featuregate.GlobalRegistry().Set(gate.ID(), true))
+	defer func() {
+		require.NoError(t, featuregate.GlobalRegistry().Set(gate.ID(), false))
+	}()
+
+	require.NoError(t, xconfmap.Validate(cfg))
 }
 
 func generateConfig() *Config {
 	return &Config{
 		Receivers: map[component.ID]component.Config{
-			component.NewID("nop"): &errConfig{},
+			component.MustNewID("nop"): &errConfig{},
 		},
 		Exporters: map[component.ID]component.Config{
-			component.NewID("nop"): &errConfig{},
+			component.MustNewID("nop"): &errConfig{},
 		},
 		Processors: map[component.ID]component.Config{
-			component.NewID("nop"): &errConfig{},
+			component.MustNewID("nop"): &errConfig{},
 		},
 		Connectors: map[component.ID]component.Config{
-			component.NewIDWithName("nop", "conn"): &errConfig{},
+			component.MustNewIDWithName("nop", "conn"): &errConfig{},
 		},
 		Extensions: map[component.ID]component.Config{
-			component.NewID("nop"): &errConfig{},
+			component.MustNewID("nop"): &errConfig{},
 		},
 		Service: service.Config{
 			Telemetry: telemetry.Config{
@@ -261,18 +300,33 @@ func generateConfig() *Config {
 					InitialFields:     map[string]any{"fieldKey": "filed-value"},
 				},
 				Metrics: telemetry.MetricsConfig{
-					Level:   configtelemetry.LevelNormal,
-					Address: ":8080",
+					Level: configtelemetry.LevelNormal,
+					MeterProvider: config.MeterProvider{
+						Readers: []config.MetricReader{
+							{
+								Pull: &config.PullMetricReader{Exporter: config.PullMetricExporter{
+									Prometheus: &config.Prometheus{
+										Host: newPtr("localhost"),
+										Port: newPtr(8080),
+									},
+								}},
+							},
+						},
+					},
 				},
 			},
-			Extensions: []component.ID{component.NewID("nop")},
+			Extensions: []component.ID{component.MustNewID("nop")},
 			Pipelines: pipelines.Config{
-				component.NewID("traces"): {
-					Receivers:  []component.ID{component.NewID("nop")},
-					Processors: []component.ID{component.NewID("nop")},
-					Exporters:  []component.ID{component.NewID("nop")},
+				pipeline.NewID(pipeline.SignalTraces): {
+					Receivers:  []component.ID{component.MustNewID("nop")},
+					Processors: []component.ID{component.MustNewID("nop")},
+					Exporters:  []component.ID{component.MustNewID("nop")},
 				},
 			},
 		},
 	}
+}
+
+func newPtr[T int | string](str T) *T {
+	return &str
 }

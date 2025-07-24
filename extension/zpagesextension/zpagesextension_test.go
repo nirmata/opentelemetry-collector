@@ -16,7 +16,9 @@ import (
 
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/component/componenttest"
-	"go.opentelemetry.io/collector/config/confignet"
+	"go.opentelemetry.io/collector/config/configauth"
+	"go.opentelemetry.io/collector/config/confighttp"
+	"go.opentelemetry.io/collector/config/configoptional"
 	"go.opentelemetry.io/collector/internal/testutil"
 )
 
@@ -28,10 +30,12 @@ func newZPagesHost() *zpagesHost {
 	return &zpagesHost{Host: componenttest.NewNopHost()}
 }
 
-func (*zpagesHost) RegisterZPages(_ *http.ServeMux, _ string) {}
+func (*zpagesHost) RegisterZPages(*http.ServeMux, string) {}
 
-var _ registerableTracerProvider = (*registerableProvider)(nil)
-var _ registerableTracerProvider = sdktrace.NewTracerProvider()
+var (
+	_ registerableTracerProvider = (*registerableProvider)(nil)
+	_ registerableTracerProvider = sdktrace.NewTracerProvider()
+)
 
 type registerableProvider struct {
 	trace.TracerProvider
@@ -48,7 +52,7 @@ func newZpagesTelemetrySettings() component.TelemetrySettings {
 
 func TestZPagesExtensionUsage(t *testing.T) {
 	cfg := &Config{
-		TCPAddr: confignet.TCPAddr{
+		ServerConfig: confighttp.ServerConfig{
 			Endpoint: testutil.GetAvailableLocalAddress(t),
 		},
 	}
@@ -62,7 +66,7 @@ func TestZPagesExtensionUsage(t *testing.T) {
 	// Give a chance for the server goroutine to run.
 	runtime.Gosched()
 
-	_, zpagesPort, err := net.SplitHostPort(cfg.TCPAddr.Endpoint)
+	_, zpagesPort, err := net.SplitHostPort(cfg.Endpoint)
 	require.NoError(t, err)
 
 	client := &http.Client{}
@@ -73,6 +77,21 @@ func TestZPagesExtensionUsage(t *testing.T) {
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
+func TestZPagesExtensionBadAuthExtension(t *testing.T) {
+	cfg := &Config{
+		ServerConfig: confighttp.ServerConfig{
+			Endpoint: "localhost:0",
+			Auth: configoptional.Some(confighttp.AuthConfig{
+				Config: configauth.Config{
+					AuthenticatorID: component.MustNewIDWithName("foo", "bar"),
+				},
+			}),
+		},
+	}
+	zpagesExt := newServer(cfg, newZpagesTelemetrySettings())
+	require.EqualError(t, zpagesExt.Start(context.Background(), componenttest.NewNopHost()), `failed to resolve authenticator "foo/bar": authenticator not found`)
+}
+
 func TestZPagesExtensionPortAlreadyInUse(t *testing.T) {
 	endpoint := testutil.GetAvailableLocalAddress(t)
 	ln, err := net.Listen("tcp", endpoint)
@@ -80,7 +99,7 @@ func TestZPagesExtensionPortAlreadyInUse(t *testing.T) {
 	defer ln.Close()
 
 	cfg := &Config{
-		TCPAddr: confignet.TCPAddr{
+		ServerConfig: confighttp.ServerConfig{
 			Endpoint: endpoint,
 		},
 	}
@@ -92,7 +111,7 @@ func TestZPagesExtensionPortAlreadyInUse(t *testing.T) {
 
 func TestZPagesMultipleStarts(t *testing.T) {
 	cfg := &Config{
-		TCPAddr: confignet.TCPAddr{
+		ServerConfig: confighttp.ServerConfig{
 			Endpoint: testutil.GetAvailableLocalAddress(t),
 		},
 	}
@@ -109,7 +128,7 @@ func TestZPagesMultipleStarts(t *testing.T) {
 
 func TestZPagesMultipleShutdowns(t *testing.T) {
 	cfg := &Config{
-		TCPAddr: confignet.TCPAddr{
+		ServerConfig: confighttp.ServerConfig{
 			Endpoint: testutil.GetAvailableLocalAddress(t),
 		},
 	}
@@ -124,7 +143,7 @@ func TestZPagesMultipleShutdowns(t *testing.T) {
 
 func TestZPagesShutdownWithoutStart(t *testing.T) {
 	cfg := &Config{
-		TCPAddr: confignet.TCPAddr{
+		ServerConfig: confighttp.ServerConfig{
 			Endpoint: testutil.GetAvailableLocalAddress(t),
 		},
 	}
@@ -133,4 +152,34 @@ func TestZPagesShutdownWithoutStart(t *testing.T) {
 	require.NotNil(t, zpagesExt)
 
 	require.NoError(t, zpagesExt.Shutdown(context.Background()))
+}
+
+func TestZPagesEnableExpvar(t *testing.T) {
+	cfg := &Config{
+		ServerConfig: confighttp.ServerConfig{
+			Endpoint: testutil.GetAvailableLocalAddress(t),
+		},
+		Expvar: ExpvarConfig{
+			Enabled: true,
+		},
+	}
+
+	zpagesExt := newServer(cfg, newZpagesTelemetrySettings())
+	require.NotNil(t, zpagesExt)
+
+	require.NoError(t, zpagesExt.Start(context.Background(), newZPagesHost()))
+	t.Cleanup(func() { require.NoError(t, zpagesExt.Shutdown(context.Background())) })
+
+	// Give a chance for the server goroutine to run.
+	runtime.Gosched()
+
+	_, zpagesPort, err := net.SplitHostPort(cfg.Endpoint)
+	require.NoError(t, err)
+
+	client := &http.Client{}
+	resp, err := client.Get("http://localhost:" + zpagesPort + "/debug/expvarz")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusOK, resp.StatusCode)
 }

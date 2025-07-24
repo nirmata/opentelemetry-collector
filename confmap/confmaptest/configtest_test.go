@@ -30,14 +30,20 @@ func TestLoadConf(t *testing.T) {
 	assert.Equal(t, map[string]any{"floating": 3.14}, cfg.ToStringMap())
 }
 
+func TestToStringMapSanitizeEmptySlice(t *testing.T) {
+	cfg, err := LoadConf(filepath.Join("testdata", "empty-slice.yaml"))
+	require.NoError(t, err)
+	assert.Equal(t, map[string]any{"slice": []any{}}, cfg.ToStringMap())
+}
+
 func TestValidateProviderScheme(t *testing.T) {
 	assert.NoError(t, ValidateProviderScheme(&schemeProvider{scheme: "file"}))
 	assert.NoError(t, ValidateProviderScheme(&schemeProvider{scheme: "s3"}))
 	assert.NoError(t, ValidateProviderScheme(&schemeProvider{scheme: "a.l-l+"}))
 	// Too short.
-	assert.Error(t, ValidateProviderScheme(&schemeProvider{scheme: "a"}))
+	require.Error(t, ValidateProviderScheme(&schemeProvider{scheme: "a"}))
 	// Invalid first character.
-	assert.Error(t, ValidateProviderScheme(&schemeProvider{scheme: "3s"}))
+	require.Error(t, ValidateProviderScheme(&schemeProvider{scheme: "3s"}))
 	// Invalid underscore character.
 	assert.Error(t, ValidateProviderScheme(&schemeProvider{scheme: "all_"}))
 }
@@ -54,6 +60,6 @@ func (s schemeProvider) Scheme() string {
 	return s.scheme
 }
 
-func (s schemeProvider) Shutdown(_ context.Context) error {
+func (s schemeProvider) Shutdown(context.Context) error {
 	return nil
 }

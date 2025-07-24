@@ -23,23 +23,27 @@ import (
 	"go.opentelemetry.io/collector/consumer/consumererror"
 	"go.opentelemetry.io/collector/exporter"
 	"go.opentelemetry.io/collector/exporter/exporterhelper"
+	"go.opentelemetry.io/collector/internal/statusutil"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/plog/plogotlp"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/pmetric/pmetricotlp"
+	"go.opentelemetry.io/collector/pdata/pprofile"
+	"go.opentelemetry.io/collector/pdata/pprofile/pprofileotlp"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 )
 
 type baseExporter struct {
 	// Input configuration.
-	config     *Config
-	client     *http.Client
-	tracesURL  string
-	metricsURL string
-	logsURL    string
-	logger     *zap.Logger
-	settings   component.TelemetrySettings
+	config      *Config
+	client      *http.Client
+	tracesURL   string
+	metricsURL  string
+	logsURL     string
+	profilesURL string
+	logger      *zap.Logger
+	settings    component.TelemetrySettings
 	// Default user-agent header.
 	userAgent string
 }
@@ -48,15 +52,16 @@ const (
 	headerRetryAfter         = "Retry-After"
 	maxHTTPResponseReadBytes = 64 * 1024
 
+	jsonContentType     = "application/json"
 	protobufContentType = "application/x-protobuf"
 )
 
 // Create new exporter.
-func newExporter(cfg component.Config, set exporter.CreateSettings) (*baseExporter, error) {
+func newExporter(cfg component.Config, set exporter.Settings) (*baseExporter, error) {
 	oCfg := cfg.(*Config)
 
-	if oCfg.Endpoint != "" {
-		_, err := url.Parse(oCfg.Endpoint)
+	if oCfg.ClientConfig.Endpoint != "" {
+		_, err := url.Parse(oCfg.ClientConfig.Endpoint)
 		if err != nil {
 			return nil, errors.New("endpoint must be a valid URL")
 		}
@@ -76,8 +81,8 @@ func newExporter(cfg component.Config, set exporter.CreateSettings) (*baseExport
 
 // start actually creates the HTTP client. The client construction is deferred till this point as this
 // is the only place we get hold of Extensions which are required to construct auth round tripper.
-func (e *baseExporter) start(_ context.Context, host component.Host) error {
-	client, err := e.config.HTTPClientSettings.ToClient(host, e.settings)
+func (e *baseExporter) start(ctx context.Context, host component.Host) error {
+	client, err := e.config.ClientConfig.ToClient(ctx, host, e.settings)
 	if err != nil {
 		return err
 	}
@@ -87,31 +92,85 @@ func (e *baseExporter) start(_ context.Context, host component.Host) error {
 
 func (e *baseExporter) pushTraces(ctx context.Context, td ptrace.Traces) error {
 	tr := ptraceotlp.NewExportRequestFromTraces(td)
-	request, err := tr.MarshalProto()
+
+	var err error
+	var request []byte
+	switch e.config.Encoding {
+	case EncodingJSON:
+		request, err = tr.MarshalJSON()
+	case EncodingProto:
+		request, err = tr.MarshalProto()
+	default:
+		err = fmt.Errorf("invalid encoding: %s", e.config.Encoding)
+	}
+
 	if err != nil {
 		return consumererror.NewPermanent(err)
 	}
 
-	return e.export(ctx, e.tracesURL, request, tracesPartialSuccessHandler)
+	return e.export(ctx, e.tracesURL, request, e.tracesPartialSuccessHandler)
 }
 
 func (e *baseExporter) pushMetrics(ctx context.Context, md pmetric.Metrics) error {
 	tr := pmetricotlp.NewExportRequestFromMetrics(md)
-	request, err := tr.MarshalProto()
+
+	var err error
+	var request []byte
+	switch e.config.Encoding {
+	case EncodingJSON:
+		request, err = tr.MarshalJSON()
+	case EncodingProto:
+		request, err = tr.MarshalProto()
+	default:
+		err = fmt.Errorf("invalid encoding: %s", e.config.Encoding)
+	}
+
 	if err != nil {
 		return consumererror.NewPermanent(err)
 	}
-	return e.export(ctx, e.metricsURL, request, metricsPartialSuccessHandler)
+	return e.export(ctx, e.metricsURL, request, e.metricsPartialSuccessHandler)
 }
 
 func (e *baseExporter) pushLogs(ctx context.Context, ld plog.Logs) error {
 	tr := plogotlp.NewExportRequestFromLogs(ld)
-	request, err := tr.MarshalProto()
+
+	var err error
+	var request []byte
+	switch e.config.Encoding {
+	case EncodingJSON:
+		request, err = tr.MarshalJSON()
+	case EncodingProto:
+		request, err = tr.MarshalProto()
+	default:
+		err = fmt.Errorf("invalid encoding: %s", e.config.Encoding)
+	}
+
 	if err != nil {
 		return consumererror.NewPermanent(err)
 	}
 
-	return e.export(ctx, e.logsURL, request, logsPartialSuccessHandler)
+	return e.export(ctx, e.logsURL, request, e.logsPartialSuccessHandler)
+}
+
+func (e *baseExporter) pushProfiles(ctx context.Context, td pprofile.Profiles) error {
+	tr := pprofileotlp.NewExportRequestFromProfiles(td)
+
+	var err error
+	var request []byte
+	switch e.config.Encoding {
+	case EncodingJSON:
+		request, err = tr.MarshalJSON()
+	case EncodingProto:
+		request, err = tr.MarshalProto()
+	default:
+		err = fmt.Errorf("invalid encoding: %s", e.config.Encoding)
+	}
+
+	if err != nil {
+		return consumererror.NewPermanent(err)
+	}
+
+	return e.export(ctx, e.profilesURL, request, e.profilesPartialSuccessHandler)
 }
 
 func (e *baseExporter) export(ctx context.Context, url string, request []byte, partialSuccessHandler partialSuccessHandler) error {
@@ -120,7 +179,16 @@ func (e *baseExporter) export(ctx context.Context, url string, request []byte, p
 	if err != nil {
 		return consumererror.NewPermanent(err)
 	}
-	req.Header.Set("Content-Type", protobufContentType)
+
+	switch e.config.Encoding {
+	case EncodingJSON:
+		req.Header.Set("Content-Type", jsonContentType)
+	case EncodingProto:
+		req.Header.Set("Content-Type", protobufContentType)
+	default:
+		return fmt.Errorf("invalid encoding: %s", e.config.Encoding)
+	}
+
 	req.Header.Set("User-Agent", e.userAgent)
 
 	resp, err := e.client.Do(req)
@@ -130,7 +198,7 @@ func (e *baseExporter) export(ctx context.Context, url string, request []byte, p
 
 	defer func() {
 		// Discard any remaining response body when we are done reading.
-		io.CopyN(io.Discard, resp.Body, maxHTTPResponseReadBytes) // nolint:errcheck
+		_, _ = io.CopyN(io.Discard, resp.Body, maxHTTPResponseReadBytes)
 		resp.Body.Close()
 	}()
 
@@ -141,35 +209,46 @@ func (e *baseExporter) export(ctx context.Context, url string, request []byte, p
 	respStatus := readResponseStatus(resp)
 
 	// Format the error message. Use the status if it is present in the response.
+	var errString string
 	var formattedErr error
 	if respStatus != nil {
-		formattedErr = fmt.Errorf(
+		errString = fmt.Sprintf(
 			"error exporting items, request to %s responded with HTTP Status Code %d, Message=%s, Details=%v",
 			url, resp.StatusCode, respStatus.Message, respStatus.Details)
 	} else {
-		formattedErr = fmt.Errorf(
+		errString = fmt.Sprintf(
 			"error exporting items, request to %s responded with HTTP Status Code %d",
 			url, resp.StatusCode)
 	}
+	formattedErr = statusutil.NewStatusFromMsgAndHTTPCode(errString, resp.StatusCode).Err()
 
-	if isRetryableStatusCode(resp.StatusCode) {
-		// A retry duration of 0 seconds will trigger the default backoff policy
-		// of our caller (retry handler).
-		retryAfter := 0
-
-		// Check if the server is overwhelmed.
-		// See spec https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/protocol/otlp.md#otlphttp-throttling
-		isThrottleError := resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable
-		if val := resp.Header.Get(headerRetryAfter); isThrottleError && val != "" {
-			if seconds, err2 := strconv.Atoi(val); err2 == nil {
-				retryAfter = seconds
-			}
-		}
-
-		return exporterhelper.NewThrottleRetry(formattedErr, time.Duration(retryAfter)*time.Second)
+	if !isRetryableStatusCode(resp.StatusCode) {
+		return consumererror.NewPermanent(formattedErr)
 	}
 
-	return consumererror.NewPermanent(formattedErr)
+	// Check if the server is overwhelmed.
+	// See spec https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/protocol/otlp.md#otlphttp-throttling
+	isThrottleError := resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable
+	if isThrottleError {
+		// Use Values to check if the header is present, and if present even if it is empty return ThrottleRetry.
+		values := resp.Header.Values(headerRetryAfter)
+		if len(values) == 0 {
+			return formattedErr
+		}
+		// The value of Retry-After field can be either an HTTP-date or a number of
+		// seconds to delay after the response is received. See https://datatracker.ietf.org/doc/html/rfc7231#section-7.1.3
+		//
+		// Retry-After = HTTP-date / delay-seconds
+		//
+		// First try to parse delay-seconds, since that is what the receiver will send.
+		if seconds, err := strconv.Atoi(values[0]); err == nil {
+			return exporterhelper.NewThrottleRetry(formattedErr, time.Duration(seconds)*time.Second)
+		}
+		if date, err := time.Parse(time.RFC1123, values[0]); err == nil {
+			return exporterhelper.NewThrottleRetry(formattedErr, time.Until(date))
+		}
+	}
+	return formattedErr
 }
 
 // Determine if the status code is retryable according to the specification.
@@ -231,7 +310,6 @@ func readResponseStatus(resp *http.Response) *status.Status {
 		// "Response body for all HTTP 4xx and HTTP 5xx responses MUST be a
 		// Protobuf-encoded Status message that describes the problem."
 		respBytes, err := readResponseBody(resp)
-
 		if err != nil {
 			return nil
 		}
@@ -249,7 +327,6 @@ func readResponseStatus(resp *http.Response) *status.Status {
 
 func handlePartialSuccessResponse(resp *http.Response, partialSuccessHandler partialSuccessHandler) error {
 	bodyBytes, err := readResponseBody(resp)
-
 	if err != nil {
 		return err
 	}
@@ -259,50 +336,122 @@ func handlePartialSuccessResponse(resp *http.Response, partialSuccessHandler par
 
 type partialSuccessHandler func(bytes []byte, contentType string) error
 
-func tracesPartialSuccessHandler(protoBytes []byte, contentType string) error {
-	if contentType != protobufContentType {
+func (e *baseExporter) tracesPartialSuccessHandler(protoBytes []byte, contentType string) error {
+	if protoBytes == nil {
 		return nil
 	}
 	exportResponse := ptraceotlp.NewExportResponse()
-	err := exportResponse.UnmarshalProto(protoBytes)
-	if err != nil {
-		return fmt.Errorf("error parsing protobuf response: %w", err)
+	switch contentType {
+	case protobufContentType:
+		err := exportResponse.UnmarshalProto(protoBytes)
+		if err != nil {
+			return fmt.Errorf("error parsing protobuf response: %w", err)
+		}
+	case jsonContentType:
+		err := exportResponse.UnmarshalJSON(protoBytes)
+		if err != nil {
+			return fmt.Errorf("error parsing json response: %w", err)
+		}
+	default:
+		return nil
 	}
+
 	partialSuccess := exportResponse.PartialSuccess()
-	if !(partialSuccess.ErrorMessage() == "" && partialSuccess.RejectedSpans() == 0) {
-		return consumererror.NewPermanent(fmt.Errorf("OTLP partial success: %s (%d rejected)", partialSuccess.ErrorMessage(), partialSuccess.RejectedSpans()))
+	if partialSuccess.ErrorMessage() != "" || partialSuccess.RejectedSpans() != 0 {
+		e.logger.Warn("Partial success response",
+			zap.String("message", exportResponse.PartialSuccess().ErrorMessage()),
+			zap.Int64("dropped_spans", exportResponse.PartialSuccess().RejectedSpans()),
+		)
 	}
 	return nil
 }
 
-func metricsPartialSuccessHandler(protoBytes []byte, contentType string) error {
-	if contentType != protobufContentType {
+func (e *baseExporter) metricsPartialSuccessHandler(protoBytes []byte, contentType string) error {
+	if protoBytes == nil {
 		return nil
 	}
 	exportResponse := pmetricotlp.NewExportResponse()
-	err := exportResponse.UnmarshalProto(protoBytes)
-	if err != nil {
-		return fmt.Errorf("error parsing protobuf response: %w", err)
+	switch contentType {
+	case protobufContentType:
+		err := exportResponse.UnmarshalProto(protoBytes)
+		if err != nil {
+			return fmt.Errorf("error parsing protobuf response: %w", err)
+		}
+	case jsonContentType:
+		err := exportResponse.UnmarshalJSON(protoBytes)
+		if err != nil {
+			return fmt.Errorf("error parsing json response: %w", err)
+		}
+	default:
+		return nil
 	}
+
 	partialSuccess := exportResponse.PartialSuccess()
-	if !(partialSuccess.ErrorMessage() == "" && partialSuccess.RejectedDataPoints() == 0) {
-		return consumererror.NewPermanent(fmt.Errorf("OTLP partial success: %s (%d rejected)", partialSuccess.ErrorMessage(), partialSuccess.RejectedDataPoints()))
+	if partialSuccess.ErrorMessage() != "" || partialSuccess.RejectedDataPoints() != 0 {
+		e.logger.Warn("Partial success response",
+			zap.String("message", exportResponse.PartialSuccess().ErrorMessage()),
+			zap.Int64("dropped_data_points", exportResponse.PartialSuccess().RejectedDataPoints()),
+		)
 	}
 	return nil
 }
 
-func logsPartialSuccessHandler(protoBytes []byte, contentType string) error {
-	if contentType != protobufContentType {
+func (e *baseExporter) logsPartialSuccessHandler(protoBytes []byte, contentType string) error {
+	if protoBytes == nil {
 		return nil
 	}
 	exportResponse := plogotlp.NewExportResponse()
-	err := exportResponse.UnmarshalProto(protoBytes)
-	if err != nil {
-		return fmt.Errorf("error parsing protobuf response: %w", err)
+	switch contentType {
+	case protobufContentType:
+		err := exportResponse.UnmarshalProto(protoBytes)
+		if err != nil {
+			return fmt.Errorf("error parsing protobuf response: %w", err)
+		}
+	case jsonContentType:
+		err := exportResponse.UnmarshalJSON(protoBytes)
+		if err != nil {
+			return fmt.Errorf("error parsing json response: %w", err)
+		}
+	default:
+		return nil
 	}
+
 	partialSuccess := exportResponse.PartialSuccess()
-	if !(partialSuccess.ErrorMessage() == "" && partialSuccess.RejectedLogRecords() == 0) {
-		return consumererror.NewPermanent(fmt.Errorf("OTLP partial success: %s (%d rejected)", partialSuccess.ErrorMessage(), partialSuccess.RejectedLogRecords()))
+	if partialSuccess.ErrorMessage() != "" || partialSuccess.RejectedLogRecords() != 0 {
+		e.logger.Warn("Partial success response",
+			zap.String("message", exportResponse.PartialSuccess().ErrorMessage()),
+			zap.Int64("dropped_log_records", exportResponse.PartialSuccess().RejectedLogRecords()),
+		)
+	}
+	return nil
+}
+
+func (e *baseExporter) profilesPartialSuccessHandler(protoBytes []byte, contentType string) error {
+	if protoBytes == nil {
+		return nil
+	}
+	exportResponse := pprofileotlp.NewExportResponse()
+	switch contentType {
+	case protobufContentType:
+		err := exportResponse.UnmarshalProto(protoBytes)
+		if err != nil {
+			return fmt.Errorf("error parsing protobuf response: %w", err)
+		}
+	case jsonContentType:
+		err := exportResponse.UnmarshalJSON(protoBytes)
+		if err != nil {
+			return fmt.Errorf("error parsing json response: %w", err)
+		}
+	default:
+		return nil
+	}
+
+	partialSuccess := exportResponse.PartialSuccess()
+	if partialSuccess.ErrorMessage() != "" || partialSuccess.RejectedProfiles() != 0 {
+		e.logger.Warn("Partial success response",
+			zap.String("message", exportResponse.PartialSuccess().ErrorMessage()),
+			zap.Int64("dropped_samples", exportResponse.PartialSuccess().RejectedProfiles()),
+		)
 	}
 	return nil
 }

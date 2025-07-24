@@ -10,18 +10,22 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mitchellh/mapstructure"
+	"github.com/go-viper/mapstructure/v2"
 	"github.com/stretchr/testify/require"
 )
 
 type TestComplexStruct struct {
-	Skipped   TestEmptyStruct             `mapstructure:",squash"`
-	Nested    TestSimpleStruct            `mapstructure:",squash"`
-	Slice     []TestSimpleStruct          `mapstructure:"slice,omitempty"`
-	Pointer   *TestSimpleStruct           `mapstructure:"ptr"`
-	Map       map[string]TestSimpleStruct `mapstructure:"map,omitempty"`
-	Remain    map[string]any              `mapstructure:",remain"`
-	Interface encoding.TextMarshaler
+	Skipped               TestEmptyStruct             `mapstructure:",squash"`
+	Nested                TestSimpleStruct            `mapstructure:",squash"`
+	Slice                 []TestSimpleStruct          `mapstructure:"slice,omitempty"`
+	Pointer               *TestSimpleStruct           `mapstructure:"ptr"`
+	Map                   map[string]TestSimpleStruct `mapstructure:"map,omitempty"`
+	Remain                map[string]any              `mapstructure:",remain"`
+	TranslatedYaml        TestYamlStruct              `mapstructure:"translated"`
+	SquashedYaml          TestYamlStruct              `mapstructure:",squash"`
+	PointerTranslatedYaml *TestPtrToYamlStruct        `mapstructure:"translated_ptr"`
+	PointerSquashedYaml   *TestPtrToYamlStruct        `mapstructure:",squash"`
+	Interface             encoding.TextMarshaler
 }
 
 type TestSimpleStruct struct {
@@ -32,6 +36,26 @@ type TestSimpleStruct struct {
 
 type TestEmptyStruct struct {
 	Value string `mapstructure:"-"`
+}
+
+type TestYamlStruct struct {
+	YamlValue     string               `yaml:"yaml_value"`
+	YamlOmitEmpty string               `yaml:"yaml_omit,omitempty"`
+	YamlInline    TestYamlSimpleStruct `yaml:",inline"`
+}
+
+type TestPtrToYamlStruct struct {
+	YamlValue     string                     `yaml:"yaml_value_ptr"`
+	YamlOmitEmpty string                     `yaml:"yaml_omit_ptr,omitempty"`
+	YamlInline    *TestYamlPtrToSimpleStruct `yaml:",inline"`
+}
+
+type TestYamlSimpleStruct struct {
+	Inline string `yaml:"yaml_inline"`
+}
+
+type TestYamlPtrToSimpleStruct struct {
+	InlinePtr string `yaml:"yaml_inline_ptr"`
 }
 
 type TestID string
@@ -47,9 +71,14 @@ func (tID TestID) MarshalText() (text []byte, err error) {
 	return []byte(out), nil
 }
 
+type TestStringLike string
+
 func TestEncode(t *testing.T) {
 	enc := New(&EncoderConfig{
-		EncodeHook: TextMarshalerHookFunc(),
+		EncodeHook: mapstructure.ComposeDecodeHookFunc(
+			YamlMarshalerHookFunc(),
+			TextMarshalerHookFunc(),
+		),
 	})
 	testCases := map[string]struct {
 		input any
@@ -62,6 +91,22 @@ func TestEncode(t *testing.T) {
 		"WithTextMarshaler": {
 			input: TestID("type"),
 			want:  "type_",
+		},
+		"MapWithTextMarshalerKey": {
+			input: map[TestID]TestSimpleStruct{
+				TestID("type"): {Value: "value"},
+			},
+			want: map[string]any{
+				"type_": map[string]any{"value": "value"},
+			},
+		},
+		"MapWithoutTextMarshalerKey": {
+			input: map[TestStringLike]TestSimpleStruct{
+				TestStringLike("key"): {Value: "value"},
+			},
+			want: map[string]any{
+				"key": map[string]any{"value": "value"},
+			},
 		},
 		"WithSlice": {
 			input: []TestID{
@@ -98,6 +143,34 @@ func TestEncode(t *testing.T) {
 					"remain2": "value",
 				},
 				Interface: TestID("value"),
+				TranslatedYaml: TestYamlStruct{
+					YamlValue:     "foo_translated",
+					YamlOmitEmpty: "",
+					YamlInline: TestYamlSimpleStruct{
+						Inline: "bar_translated",
+					},
+				},
+				SquashedYaml: TestYamlStruct{
+					YamlValue:     "foo_squashed",
+					YamlOmitEmpty: "",
+					YamlInline: TestYamlSimpleStruct{
+						Inline: "bar_squashed",
+					},
+				},
+				PointerTranslatedYaml: &TestPtrToYamlStruct{
+					YamlValue:     "foo_translated_ptr",
+					YamlOmitEmpty: "",
+					YamlInline: &TestYamlPtrToSimpleStruct{
+						InlinePtr: "bar_translated_ptr",
+					},
+				},
+				PointerSquashedYaml: &TestPtrToYamlStruct{
+					YamlValue:     "foo_squashed_ptr",
+					YamlOmitEmpty: "",
+					YamlInline: &TestYamlPtrToSimpleStruct{
+						InlinePtr: "bar_squashed_ptr",
+					},
+				},
 			},
 			want: map[string]any{
 				"value": "nested",
@@ -105,10 +178,22 @@ func TestEncode(t *testing.T) {
 				"map": map[string]any{
 					"Key": map[string]any{"value": "map"},
 				},
-				"ptr":       map[string]any{"value": "pointer"},
-				"interface": "value_",
-				"remain1":   23,
-				"remain2":   "value",
+				"ptr":         map[string]any{"value": "pointer"},
+				"interface":   "value_",
+				"yaml_value":  "foo_squashed",
+				"yaml_inline": "bar_squashed",
+				"translated": map[string]any{
+					"yaml_value":  "foo_translated",
+					"yaml_inline": "bar_translated",
+				},
+				"yaml_value_ptr":  "foo_squashed_ptr",
+				"yaml_inline_ptr": "bar_squashed_ptr",
+				"translated_ptr": map[string]any{
+					"yaml_value_ptr":  "foo_translated_ptr",
+					"yaml_inline_ptr": "bar_translated_ptr",
+				},
+				"remain1": 23,
+				"remain2": "value",
 			},
 		},
 	}
@@ -128,33 +213,38 @@ func TestEncode(t *testing.T) {
 }
 
 func TestGetTagInfo(t *testing.T) {
-	testCases := map[string]struct {
+	testCases := []struct {
+		name       string
 		field      reflect.StructField
 		wantName   string
 		wantOmit   bool
 		wantSquash bool
 	}{
-		"WithoutTags": {
+		{
+			name: "WithoutTags",
 			field: reflect.StructField{
 				Name: "Test",
 			},
 			wantName: "test",
 		},
-		"WithoutMapStructureTag": {
+		{
+			name: "WithoutMapStructureTag",
 			field: reflect.StructField{
 				Tag:  `yaml:"hello,inline"`,
 				Name: "YAML",
 			},
 			wantName: "yaml",
 		},
-		"WithRename": {
+		{
+			name: "WithRename",
 			field: reflect.StructField{
 				Tag:  `mapstructure:"hello"`,
 				Name: "Test",
 			},
 			wantName: "hello",
 		},
-		"WithOmitEmpty": {
+		{
+			name: "WithOmitEmpty",
 			field: reflect.StructField{
 				Tag:  `mapstructure:"hello,omitempty"`,
 				Name: "Test",
@@ -162,14 +252,16 @@ func TestGetTagInfo(t *testing.T) {
 			wantName: "hello",
 			wantOmit: true,
 		},
-		"WithSquash": {
+		{
+			name: "WithSquash",
 			field: reflect.StructField{
 				Tag:  `mapstructure:",squash"`,
 				Name: "Test",
 			},
 			wantSquash: true,
 		},
-		"WithRemain": {
+		{
+			name: "WithRemain",
 			field: reflect.StructField{
 				Tag:  `mapstructure:",remain"`,
 				Name: "Test",
@@ -177,12 +269,12 @@ func TestGetTagInfo(t *testing.T) {
 			wantSquash: true,
 		},
 	}
-	for name, testCase := range testCases {
-		t.Run(name, func(t *testing.T) {
-			got := getTagInfo(testCase.field)
-			require.Equal(t, testCase.wantName, got.name)
-			require.Equal(t, testCase.wantOmit, got.omitEmpty)
-			require.Equal(t, testCase.wantSquash, got.squash)
+	for _, tt := range testCases {
+		t.Run(tt.name, func(t *testing.T) {
+			got := getTagInfo(tt.field)
+			require.Equal(t, tt.wantName, got.name)
+			require.Equal(t, tt.wantOmit, got.omitEmpty)
+			require.Equal(t, tt.wantSquash, got.squash)
 		})
 	}
 }
@@ -198,10 +290,10 @@ func TestEncodeValueError(t *testing.T) {
 		{encodeFn: enc.encodeStruct, wantErr: &reflect.ValueError{Method: "encodeStruct", Kind: reflect.String}},
 		{encodeFn: enc.encodeSlice, wantErr: &reflect.ValueError{Method: "encodeSlice", Kind: reflect.String}},
 	}
-	for _, testCase := range testCases {
-		got, err := testCase.encodeFn(testValue)
+	for _, tt := range testCases {
+		got, err := tt.encodeFn(testValue)
 		require.Error(t, err)
-		require.Equal(t, testCase.wantErr, err)
+		require.Equal(t, tt.wantErr, err)
 		require.Nil(t, got)
 	}
 }
@@ -221,7 +313,7 @@ func TestEncodeNonStringEncodedKey(t *testing.T) {
 	}
 	got, err := enc.Encode(testCase)
 	require.Error(t, err)
-	require.True(t, errors.Is(err, errNonStringEncodedKey))
+	require.ErrorIs(t, err, errNonStringEncodedKey)
 	require.Nil(t, got)
 }
 
@@ -273,7 +365,7 @@ func TestEncodeStructError(t *testing.T) {
 	}
 	got, err := enc.Encode(testCase)
 	require.Error(t, err)
-	require.True(t, errors.Is(err, wantErr))
+	require.ErrorIs(t, err, wantErr)
 	require.Nil(t, got)
 }
 

@@ -48,7 +48,7 @@ func (ms Metrics) unmarshalJsoniter(iter *jsoniter.Iterator) {
 	iter.ReadObjectCB(func(iter *jsoniter.Iterator, f string) bool {
 		switch f {
 		case "resource_metrics", "resourceMetrics":
-			iter.ReadArrayCB(func(iterator *jsoniter.Iterator) bool {
+			iter.ReadArrayCB(func(*jsoniter.Iterator) bool {
 				ms.ResourceMetrics().AppendEmpty().unmarshalJsoniter(iter)
 				return true
 			})
@@ -63,7 +63,7 @@ func (ms ResourceMetrics) unmarshalJsoniter(iter *jsoniter.Iterator) {
 	iter.ReadObjectCB(func(iter *jsoniter.Iterator, f string) bool {
 		switch f {
 		case "resource":
-			json.ReadResource(iter, &ms.orig.Resource)
+			internal.UnmarshalJSONIterResource(internal.NewResource(&ms.orig.Resource, ms.state), iter)
 		case "scopeMetrics", "scope_metrics":
 			iter.ReadArrayCB(func(iter *jsoniter.Iterator) bool {
 				ms.ScopeMetrics().AppendEmpty().unmarshalJsoniter(iter)
@@ -82,7 +82,7 @@ func (ms ScopeMetrics) unmarshalJsoniter(iter *jsoniter.Iterator) {
 	iter.ReadObjectCB(func(iter *jsoniter.Iterator, f string) bool {
 		switch f {
 		case "scope":
-			json.ReadScope(iter, &ms.orig.Scope)
+			internal.UnmarshalJSONIterInstrumentationScope(internal.NewInstrumentationScope(&ms.orig.Scope, ms.state), iter)
 		case "metrics":
 			iter.ReadArrayCB(func(iter *jsoniter.Iterator) bool {
 				ms.Metrics().AppendEmpty().unmarshalJsoniter(iter)
@@ -106,6 +106,8 @@ func (ms Metric) unmarshalJsoniter(iter *jsoniter.Iterator) {
 			ms.orig.Description = iter.ReadString()
 		case "unit":
 			ms.orig.Unit = iter.ReadString()
+		case "metadata":
+			internal.UnmarshalJSONIterMap(internal.NewMap(&ms.orig.Metadata, ms.state), iter)
 		case "sum":
 			ms.SetEmptySum().unmarshalJsoniter(iter)
 		case "gauge":
@@ -222,10 +224,7 @@ func (ms NumberDataPoint) unmarshalJsoniter(iter *jsoniter.Iterator) {
 				AsDouble: json.ReadFloat64(iter),
 			}
 		case "attributes":
-			iter.ReadArrayCB(func(iter *jsoniter.Iterator) bool {
-				ms.orig.Attributes = append(ms.orig.Attributes, json.ReadAttribute(iter))
-				return true
-			})
+			internal.UnmarshalJSONIterMap(internal.NewMap(&ms.orig.Attributes, ms.state), iter)
 		case "exemplars":
 			iter.ReadArrayCB(func(iter *jsoniter.Iterator) bool {
 				ms.Exemplars().AppendEmpty().unmarshalJsoniter(iter)
@@ -248,10 +247,7 @@ func (ms HistogramDataPoint) unmarshalJsoniter(iter *jsoniter.Iterator) {
 		case "start_time_unix_nano", "startTimeUnixNano":
 			ms.orig.StartTimeUnixNano = json.ReadUint64(iter)
 		case "attributes":
-			iter.ReadArrayCB(func(iter *jsoniter.Iterator) bool {
-				ms.orig.Attributes = append(ms.orig.Attributes, json.ReadAttribute(iter))
-				return true
-			})
+			internal.UnmarshalJSONIterMap(internal.NewMap(&ms.orig.Attributes, ms.state), iter)
 		case "count":
 			ms.orig.Count = json.ReadUint64(iter)
 		case "sum":
@@ -296,10 +292,7 @@ func (ms ExponentialHistogramDataPoint) unmarshalJsoniter(iter *jsoniter.Iterato
 		case "start_time_unix_nano", "startTimeUnixNano":
 			ms.orig.StartTimeUnixNano = json.ReadUint64(iter)
 		case "attributes":
-			iter.ReadArrayCB(func(iter *jsoniter.Iterator) bool {
-				ms.orig.Attributes = append(ms.orig.Attributes, json.ReadAttribute(iter))
-				return true
-			})
+			internal.UnmarshalJSONIterMap(internal.NewMap(&ms.orig.Attributes, ms.state), iter)
 		case "count":
 			ms.orig.Count = json.ReadUint64(iter)
 		case "sum":
@@ -344,10 +337,7 @@ func (ms SummaryDataPoint) unmarshalJsoniter(iter *jsoniter.Iterator) {
 		case "start_time_unix_nano", "startTimeUnixNano":
 			ms.orig.StartTimeUnixNano = json.ReadUint64(iter)
 		case "attributes":
-			iter.ReadArrayCB(func(iter *jsoniter.Iterator) bool {
-				ms.orig.Attributes = append(ms.orig.Attributes, json.ReadAttribute(iter))
-				return true
-			})
+			internal.UnmarshalJSONIterMap(internal.NewMap(&ms.orig.Attributes, ms.state), iter)
 		case "count":
 			ms.orig.Count = json.ReadUint64(iter)
 		case "sum":
@@ -401,10 +391,7 @@ func (ms Exemplar) unmarshalJsoniter(iter *jsoniter.Iterator) {
 	iter.ReadObjectCB(func(iter *jsoniter.Iterator, f string) bool {
 		switch f {
 		case "filtered_attributes", "filteredAttributes":
-			iter.ReadArrayCB(func(iter *jsoniter.Iterator) bool {
-				ms.orig.FilteredAttributes = append(ms.orig.FilteredAttributes, json.ReadAttribute(iter))
-				return true
-			})
+			internal.UnmarshalJSONIterMap(internal.NewMap(&ms.orig.FilteredAttributes, ms.state), iter)
 		case "timeUnixNano", "time_unix_nano":
 			ms.orig.TimeUnixNano = json.ReadUint64(iter)
 		case "as_int", "asInt":

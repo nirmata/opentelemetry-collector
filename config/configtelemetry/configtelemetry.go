@@ -4,20 +4,19 @@
 package configtelemetry // import "go.opentelemetry.io/collector/config/configtelemetry"
 
 import (
-	"encoding"
 	"errors"
 	"fmt"
 	"strings"
 )
 
 const (
-	// LevelNone indicates that no telemetry data should be collected.
+	// LevelNone indicates that no telemetry should be collected.
 	LevelNone Level = iota - 1
-	// LevelBasic is the recommended and covers the basics of the service telemetry.
+	// LevelBasic indicates that only core Collector telemetry should be collected.
 	LevelBasic
-	// LevelNormal adds some other indicators on top of basic.
+	// LevelNormal indicates that all low-overhead telemetry should be collected.
 	LevelNormal
-	// LevelDetailed adds dimensions and views to the previous levels.
+	// LevelDetailed indicates that all available telemetry should be collected.
 	LevelDetailed
 
 	levelNoneStr     = "None"
@@ -29,9 +28,6 @@ const (
 // Level is the level of internal telemetry (metrics, logs, traces about the component itself)
 // that every component should generate.
 type Level int32
-
-var _ encoding.TextMarshaler = (*Level)(nil)
-var _ encoding.TextUnmarshaler = (*Level)(nil)
 
 func (l Level) String() string {
 	switch l {

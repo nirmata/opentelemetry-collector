@@ -4,8 +4,10 @@
 package configunmarshaler // import "go.opentelemetry.io/collector/otelcol/internal/configunmarshaler"
 
 import (
+	"errors"
 	"fmt"
-	"reflect"
+
+	"golang.org/x/exp/maps"
 
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/confmap"
@@ -30,11 +32,17 @@ func (c *Configs[F]) Unmarshal(conf *confmap.Conf) error {
 	// Prepare resulting map.
 	c.cfgs = make(map[component.ID]component.Config)
 	// Iterate over raw configs and create a config for each.
-	for id, value := range rawCfgs {
+	for id := range rawCfgs {
 		// Find factory based on component kind and type that we read from config source.
 		factory, ok := c.factories[id.Type()]
 		if !ok {
-			return errorUnknownType(id, reflect.ValueOf(c.factories).MapKeys())
+			return errorUnknownType(id, maps.Keys(c.factories))
+		}
+
+		// Get the configuration from the confmap.Conf to preserve internal representation.
+		sub, err := conf.Sub(id.String())
+		if err != nil {
+			return errorUnmarshalError(id, err)
 		}
 
 		// Create the default config for this component.
@@ -42,7 +50,7 @@ func (c *Configs[F]) Unmarshal(conf *confmap.Conf) error {
 
 		// Now that the default config struct is created we can Unmarshal into it,
 		// and it will apply user-defined config on top of the default.
-		if err := component.UnmarshalConfig(confmap.NewFromStringMap(value), cfg); err != nil {
+		if err := sub.Unmarshal(&cfg); err != nil {
 			return errorUnmarshalError(id, err)
 		}
 
@@ -56,7 +64,10 @@ func (c *Configs[F]) Configs() map[component.ID]component.Config {
 	return c.cfgs
 }
 
-func errorUnknownType(id component.ID, factories []reflect.Value) error {
+func errorUnknownType(id component.ID, factories []component.Type) error {
+	if id.Type().String() == "logging" {
+		return errors.New("the logging exporter has been deprecated, use the debug exporter instead")
+	}
 	return fmt.Errorf("unknown type: %q for id: %q (valid values: %v)", id.Type(), id, factories)
 }
 
