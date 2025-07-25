@@ -5,7 +5,7 @@ receivers:
         endpoint: 0.0.0.0:4317
       http:
         endpoint: 0.0.0.0:4318
-
+  
   # Prometheus receiver for scraping metrics
   # Note: Configure scrape_configs as needed for your environment
   prometheus:
@@ -15,7 +15,7 @@ receivers:
         scrape_interval: 30s
         static_configs:
         - targets: ['localhost:8888']
-
+        
 processors:
   batch:
     timeout: 1s
@@ -59,7 +59,7 @@ service:
       receivers: [otlp]
       processors: [memory_limiter, batch]
       exporters: [debug, otlp]
-
+  
   telemetry:
     logs:
       level: info 
